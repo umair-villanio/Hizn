@@ -13,6 +13,9 @@
  */
 
 import { EventEmitter } from 'events';
+import * as fs from 'fs/promises';
+import * as os from 'os';
+import * as path from 'path';
 import * as mockttp from 'mockttp';
 
 export interface CA {
@@ -154,19 +157,51 @@ export class ProxyService extends EventEmitter {
     /** flowId → request host, so responses can be scope-matched. */
     private flowHosts = new Map<string, string>();
 
-    /** Generate (once) and return the root CA in PEM form. */
+    /**
+     * Return the root CA in PEM form, persisting it so it survives restarts.
+     *
+     * The CA is written to ~/.hizn once and reused on every later launch. This
+     * is essential: if we minted a fresh CA each run, the certificate the user
+     * imported into Firefox / their device would keep a matching *name* but a
+     * different key, and the client would reject every leaf with
+     * SEC_ERROR_BAD_SIGNATURE. A stable CA means "import once, trust forever"
+     * (exactly how Burp's CA works).
+     */
+    private readonly caDir = path.join(os.homedir(), '.hizn');
+    private readonly caKeyPath = path.join(this.caDir, 'ca-key.pem');
+    private readonly caCertPath = path.join(this.caDir, 'ca-cert.pem');
+
     async getCA(): Promise<CA> {
-        if (!this.ca) {
-            const generated = await mockttp.generateCACertificate({
-                subject: {
-                    commonName: 'hizn CA - interception only',
-                    organizationName: 'hizn',
-                    countryName: 'XX',
-                },
-                bits: 2048,
-            });
-            this.ca = { key: generated.key, cert: generated.cert };
-        }
+        if (this.ca) return this.ca;
+
+        // 1. Reuse a previously-persisted CA if one exists.
+        try {
+            const [key, cert] = await Promise.all([
+                fs.readFile(this.caKeyPath, 'utf8'),
+                fs.readFile(this.caCertPath, 'utf8'),
+            ]);
+            if (key.includes('PRIVATE KEY') && cert.includes('CERTIFICATE')) {
+                this.ca = { key, cert };
+                return this.ca;
+            }
+        } catch { /* no stored CA yet — generate and persist one below */ }
+
+        // 2. First run (or unreadable store): generate once, then save.
+        const generated = await mockttp.generateCACertificate({
+            subject: {
+                commonName: 'hizn CA - interception only',
+                organizationName: 'hizn',
+                countryName: 'XX',
+            },
+            bits: 2048,
+        });
+        this.ca = { key: generated.key, cert: generated.cert };
+        try {
+            await fs.mkdir(this.caDir, { recursive: true });
+            // The private key is sensitive — keep it owner-only where supported.
+            await fs.writeFile(this.caKeyPath, generated.key, { encoding: 'utf8', mode: 0o600 });
+            await fs.writeFile(this.caCertPath, generated.cert, { encoding: 'utf8', mode: 0o644 });
+        } catch { /* non-fatal: fall back to an in-memory-only CA this run */ }
         return this.ca;
     }
 
