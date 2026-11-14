@@ -16,6 +16,7 @@ import { AdbService } from '../devices/adb-service';
 import { FridaService } from '../frida/frida-service';
 import { DesktopService } from '../desktop/desktop-service';
 import { RepeaterService } from '../repeater/repeater-service';
+import { IntruderService } from '../intruder/intruder-service';
 import { PluginService } from '../plugins/plugin-service';
 import { Orchestrator, SetupStep } from '../orchestrator';
 
@@ -35,6 +36,7 @@ export class ApiServer {
     private frida = new FridaService(this.adb);
     private desktop = new DesktopService();
     private repeater = new RepeaterService();
+    private intruder = new IntruderService();
     private plugins = new PluginService();
     /** Serials hizn has actively routed (one-click connected). */
     private connected = new Set<string>();
@@ -51,6 +53,7 @@ export class ApiServer {
     constructor(private opts: ApiServerOptions) {
         this.app.use(express.json());
         this.wireProxyEvents();
+        this.wireIntruderEvents();
         this.wireWebsocket();
         this.routes();
         this.app.use(express.static(opts.uiDir));
@@ -97,6 +100,12 @@ export class ApiServer {
         this.proxy.on('intercept-closed', (ref) => this.broadcast({ type: 'intercept-closed', ref }));
         this.proxy.on('intercept-config', (config) => this.broadcast({ type: 'intercept-config', config }));
         this.proxy.on('scope-changed', (scope) => this.broadcast({ type: 'scope', scope }));
+    }
+
+    private wireIntruderEvents(): void {
+        this.intruder.on('start', (info) => this.broadcast({ type: 'intruder-start', info }));
+        this.intruder.on('row', (row) => this.broadcast({ type: 'intruder-row', row }));
+        this.intruder.on('done', (summary) => this.broadcast({ type: 'intruder-done', summary }));
     }
 
     private wireWebsocket(): void {
@@ -320,6 +329,42 @@ export class ApiServer {
         api.get('/scope', (_req, res) => res.json(this.proxy.getScope()));
         api.post('/scope', (req, res) => {
             res.json(this.proxy.setScope({ enabled: req.body?.enabled, hosts: req.body?.hosts }));
+        });
+
+        // ---- Intruder (automated request fuzzing) ----
+        const normPayloads = (p: unknown): string[] => {
+            if (Array.isArray(p)) return p.map((x) => String(x));
+            if (typeof p === 'string') return p.split('\n').map((x) => x.replace(/\r$/, ''));
+            return [];
+        };
+        api.post('/intruder/start', (req, res) => {
+            if (this.intruder.isRunning()) {
+                return res.status(409).json({ error: 'An attack is already running' });
+            }
+            const template = {
+                method: req.body?.method,
+                url: String(req.body?.url ?? ''),
+                headers: req.body?.headers,
+                body: req.body?.body,
+                insecure: !!req.body?.insecure,
+            };
+            const payloads = normPayloads(req.body?.payloads).filter((p) => p.length > 0);
+            const attackType = req.body?.attackType === 'batteringram' ? 'batteringram' : 'sniper';
+            const positions = this.intruder.countPositions(template);
+            if (!template.url) return res.status(400).json({ error: 'A URL is required' });
+            if (positions === 0) {
+                return res.status(400).json({ error: 'No payload positions — wrap a value in § markers, e.g. §FUZZ§' });
+            }
+            if (payloads.length === 0) return res.status(400).json({ error: 'No payloads provided' });
+            // Fire-and-forget: progress + results stream over the WebSocket.
+            this.intruder
+                .run({ template, attackType, payloads, urlEncode: !!req.body?.urlEncode })
+                .catch((e: any) => this.broadcast({ type: 'intruder-done', summary: { total: 0, completed: 0, cancelled: false, error: e.message } }));
+            res.json({ ok: true, positions, attackType });
+        });
+        api.post('/intruder/stop', (_req, res) => {
+            this.intruder.stop();
+            res.json({ ok: true });
         });
 
         // ---- Repeater (re-send an edited request) ----
