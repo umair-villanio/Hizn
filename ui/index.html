@@ -248,24 +248,6 @@
   .rp-status { font-weight: 700; font-size: 14px; }
   #view-repeater .ip-text { min-height: 120px; }
 
-  /* ---------- Intruder ---------- */
-  #view-intruder { overflow: auto; display: flex; flex-direction: column; }
-  #view-intruder .ip-text { min-height: 96px; }
-  .it-config { border-top: 2px solid var(--border); display: flex; flex-direction: column; }
-  .it-config-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 12px 18px 4px; }
-  .it-res { border-top: 2px solid var(--border); display: flex; flex-direction: column; }
-  .it-table-wrap { overflow: auto; }
-  .it-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
-  .it-table th { text-align: left; font-weight: 650; color: var(--faint); font-size: 11px; text-transform: uppercase; letter-spacing: .4px; padding: 8px 12px; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--panel); }
-  .it-table td { padding: 7px 12px; border-bottom: 1px solid var(--border-soft); font-family: var(--mono); color: var(--text); vertical-align: top; }
-  .it-table td.pl { word-break: break-all; white-space: pre-wrap; max-width: 0; }
-  .it-table td.num { text-align: right; color: var(--muted); }
-  .it-table tr:hover td { background: var(--panel-2); }
-  .it-table .st { font-weight: 700; }
-  .it-table .st.s2 { color: var(--accent); } .it-table .st.s3 { color: var(--blue); }
-  .it-table .st.s4 { color: var(--amber); } .it-table .st.s5 { color: var(--red); }
-  .it-table .st.err { color: var(--red); font-weight: 600; }
-
   /* ---------- Decoder ---------- */
   #view-decoder { overflow: auto; }
   .dec-wrap { display: flex; flex-direction: column; gap: 10px; padding: 14px 18px; min-height: 0; }
@@ -328,7 +310,6 @@
       <button class="rail-btn active" data-view="intercept"><span class="ri">⏸</span>Intercept<span id="tabInterceptBadge" class="rail-badge">0</span></button>
       <button class="rail-btn" data-view="history"><span class="ri">≣</span>History<span id="tabHistoryCount" class="rail-badge" style="background:var(--blue);color:#06233f">0</span></button>
       <button class="rail-btn" data-view="repeater"><span class="ri">⟳</span>Repeater</button>
-      <button class="rail-btn" data-view="intruder"><span class="ri">⌖</span>Intruder</button>
       <button class="rail-btn" data-view="decoder"><span class="ri">⚇</span>Decoder</button>
       <div class="rail-sep"></div>
       <button class="rail-btn" data-sec="connect"><span class="ri">⚡</span>Connect</button>
@@ -336,7 +317,6 @@
       <button class="rail-btn" data-sec="burp"><span class="ri">⛓</span>Burp</button>
       <button class="rail-btn" data-sec="rules"><span class="ri">⇄</span>Rules</button>
       <button class="rail-btn" data-sec="scope"><span class="ri">◎</span>Scope</button>
-      <button class="rail-btn" data-sec="exclude"><span class="ri">⊘</span>Exclude</button>
       <button class="rail-btn" data-sec="plugins"><span class="ri">▣</span>Plugins</button>
     </nav>
   </aside>
@@ -455,18 +435,6 @@
 
     </section>
 
-    <section id="sec-exclude" class="sect">
-    <div class="card">
-      <div class="head"><h2>Excluded hosts</h2><span class="hint">deny-list</span></div>
-      <div class="field">
-        <label>Hosts to ignore <span style="color:var(--faint)">(one per line, <code>*</code> wildcard)</span></label>
-        <textarea id="excludeHosts" class="ip-text" style="min-height:120px" spellcheck="false" placeholder="analytics.google.com&#10;*.doubleclick.net&#10;clients*.google.com"></textarea>
-      </div>
-      <button id="applyExclude" class="btn" style="width:100%">Apply exclusions</button>
-      <div class="geny-hint">Traffic to these hosts is passed straight through — <b>not captured to history, not held by Intercept, not rewritten</b>. Remove a host and it’s captured &amp; intercepted again right away. Great for muting noisy telemetry/CDN hosts while you focus on a target.</div>
-    </div>
-    </section>
-
     <section id="sec-plugins" class="sect">
     <div class="card">
       <div class="head"><h2>Plugins</h2><button id="addPlugin" class="btn ghost" style="margin-left:auto;padding:5px 10px;font-size:12.5px">+ Add</button></div>
@@ -512,7 +480,6 @@
           <button id="ipDrop" class="btn danger">✕ Drop</button>
           <label id="ipRespWrap" class="ip-resp"><input type="checkbox" id="ipInterceptResp" /> Intercept response</label>
           <button id="ipToRepeater" class="btn ghost">→ Repeater</button>
-          <button id="ipToIntruder" class="btn ghost">→ Intruder</button>
           <button id="ipForwardAll" class="btn ghost">Forward all</button>
           <div class="spacer"></div>
           <span class="ip-hint">Forwarded items move to HTTP history.</span>
@@ -553,7 +520,7 @@
           </div>
         </div>
         <aside id="detailPane" class="detail-pane">
-          <div class="dhead"><strong>Request detail</strong><button id="copyCurl" class="btn ghost" style="padding:4px 10px;font-size:12px">⧉ cURL</button><button id="toRepeater" class="btn ghost" style="padding:4px 10px;font-size:12px">→ Repeater</button><button id="toIntruder" class="btn ghost" style="padding:4px 10px;font-size:12px">→ Intruder</button><span class="close" id="closeDetail">×</span></div>
+          <div class="dhead"><strong>Request detail</strong><button id="copyCurl" class="btn ghost" style="padding:4px 10px;font-size:12px">⧉ cURL</button><button id="toRepeater" class="btn ghost" style="padding:4px 10px;font-size:12px">→ Repeater</button><span class="close" id="closeDetail">×</span></div>
           <div id="detailBody"></div>
         </aside>
       </div>
@@ -591,61 +558,6 @@
             <label class="ip-lbl">Response body</label>
             <textarea id="rpResBody" class="ip-text" readonly spellcheck="false"></textarea>
           </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- Intruder view: automated request fuzzing -->
-    <section id="view-intruder" class="view">
-      <div class="rp-req">
-        <div class="rp-line">
-          <select id="itMethod" style="width:auto">
-            <option>GET</option><option>POST</option><option>PUT</option><option>PATCH</option><option>DELETE</option><option>HEAD</option><option>OPTIONS</option>
-          </select>
-          <input id="itUrl" type="text" placeholder="https://example.com/user?id=§1§" />
-          <button id="itMark" class="btn ghost" style="white-space:nowrap" title="Wrap the selected text in § markers to make it a payload position">§ Mark</button>
-        </div>
-        <div class="ip-grid">
-          <div class="ip-col">
-            <label class="ip-lbl">Request headers <span class="ip-note">§ around a value = a position</span></label>
-            <textarea id="itHeaders" class="ip-text" spellcheck="false" placeholder="Header: value (one per line)"></textarea>
-          </div>
-          <div class="ip-col">
-            <label class="ip-lbl">Request body</label>
-            <textarea id="itReqBody" class="ip-text" spellcheck="false"></textarea>
-          </div>
-        </div>
-      </div>
-      <div class="it-config">
-        <div class="it-config-row">
-          <select id="itAttack" style="width:auto">
-            <option value="sniper">Sniper — one position at a time</option>
-            <option value="batteringram">Battering ram — same payload in every position</option>
-          </select>
-          <label class="ip-resp"><input type="checkbox" id="itUrlEncode" /> URL-encode</label>
-          <label class="ip-resp"><input type="checkbox" id="itInsecure" /> Ignore TLS errors</label>
-          <span id="itPositions" class="ip-hint">0 positions</span>
-          <div class="spacer"></div>
-          <button id="itStart" class="btn-primary" style="width:auto;padding:10px 20px">▶ Start attack</button>
-          <button id="itStop" class="btn danger" disabled>■ Stop</button>
-        </div>
-        <div class="ip-col" style="padding:0 18px 12px">
-          <label class="ip-lbl">Payloads <span class="ip-note" id="itPayloadCount">0 lines</span></label>
-          <textarea id="itPayloads" class="ip-text" style="min-height:84px" spellcheck="false" placeholder="One payload per line&#10;admin&#10;' OR '1'='1&#10;../../../etc/passwd"></textarea>
-        </div>
-      </div>
-      <div class="it-res">
-        <div class="rp-res-head"><span id="itStatus" class="rp-status">Results</span><span id="itMeta" class="ip-hint"></span></div>
-        <div class="it-table-wrap">
-          <table class="it-table">
-            <thead><tr>
-              <th style="width:48px">#</th><th style="width:52px">Pos</th>
-              <th>Payload</th><th style="width:68px">Status</th>
-              <th style="width:88px;text-align:right">Length</th><th style="width:74px;text-align:right">Time</th>
-            </tr></thead>
-            <tbody id="itRows"></tbody>
-          </table>
-          <div id="itEmpty" class="empty"><div class="big">No attack run yet</div>Mark payload positions with §, add payloads, then <b>Start attack</b>.</div>
         </div>
       </div>
     </section>
@@ -954,111 +866,6 @@ $('rpSend').addEventListener('click', async () => {
   } catch (e) { $('rpStatus').textContent = 'Error'; $('rpMeta').textContent = e.message; }
   finally { btn.disabled = false; btn.textContent = 'Send ▶'; }
 });
-
-/* ================= Intruder ================= */
-let itLastField = null;          // last focused §-markable field
-let itCount = 0, itTotal = 0;    // live result counters
-
-function countMarkers(s) { return (String(s || '').match(/§[\s\S]*?§/g) || []).length; }
-function updateItPositions() {
-  const n = countMarkers($('itUrl').value) + countMarkers($('itHeaders').value) + countMarkers($('itReqBody').value);
-  const pl = $('itPayloads').value.split('\n').filter(x => x.trim().length).length;
-  $('itPositions').textContent = `${n} position${n === 1 ? '' : 's'}`;
-  $('itPositions').style.color = n ? 'var(--accent)' : 'var(--faint)';
-  $('itPayloadCount').textContent = `${pl} payload${pl === 1 ? '' : 's'}`;
-}
-['itUrl', 'itHeaders', 'itReqBody'].forEach(id => {
-  const el = $(id);
-  el.addEventListener('focus', () => itLastField = el);
-  el.addEventListener('input', updateItPositions);
-});
-$('itPayloads').addEventListener('input', updateItPositions);
-$('itMark').addEventListener('click', () => {
-  const el = itLastField || $('itUrl');
-  const s = el.selectionStart, e = el.selectionEnd;
-  if (s == null || s === e) { banner('Select the text to fuzz first, then press § Mark.'); el.focus(); return; }
-  const v = el.value;
-  el.value = v.slice(0, s) + '§' + v.slice(s, e) + '§' + v.slice(e);
-  el.focus(); el.selectionStart = s; el.selectionEnd = e + 2;
-  updateItPositions();
-});
-
-function sendToIntruder(f) {
-  if (!f) return;
-  $('itMethod').value = f.method || 'GET';
-  $('itUrl').value = f.url || '';
-  $('itHeaders').value = headersToText(f.requestHeaders || f.headers);
-  $('itReqBody').value = f.body || f.requestBody || '';
-  updateItPositions();
-  switchView('intruder');
-  banner('Loaded into Intruder — select text, press § Mark, then add payloads.');
-}
-$('toIntruder').addEventListener('click', () => sendToIntruder(flows.get(selectedId)));
-$('ipToIntruder').addEventListener('click', () => {
-  const item = intercept.queue[0]; if (!item || item.kind !== 'request') return;
-  const p = parseRaw($('ipRaw').value);
-  const t = p.startLine.split(/\s+/);
-  sendToIntruder({ method: t[0], url: t[1], requestHeaders: p.headers, body: p.body });
-});
-
-function itSetRunning(on) {
-  $('itStart').disabled = on;
-  $('itStop').disabled = !on;
-  $('itStart').textContent = on ? '… Running' : '▶ Start attack';
-}
-$('itStart').addEventListener('click', async () => {
-  const positions = countMarkers($('itUrl').value) + countMarkers($('itHeaders').value) + countMarkers($('itReqBody').value);
-  if (!positions) return banner('Mark at least one § position first (select text, press § Mark).');
-  const payloads = $('itPayloads').value.split('\n').map(x => x.replace(/\r$/, '')).filter(x => x.length);
-  if (!payloads.length) return banner('Add at least one payload (one per line).');
-  itSetRunning(true);
-  $('itRows').innerHTML = ''; $('itEmpty').style.display = 'none';
-  $('itStatus').textContent = 'Starting…'; $('itStatus').style.color = 'var(--text)'; $('itMeta').textContent = '';
-  itCount = 0; itTotal = 0;
-  try {
-    await api('/intruder/start', { method: 'POST', body: {
-      method: $('itMethod').value, url: $('itUrl').value.trim(),
-      headers: textToHeaders($('itHeaders').value), body: $('itReqBody').value || undefined,
-      attackType: $('itAttack').value, payloads,
-      urlEncode: $('itUrlEncode').checked, insecure: $('itInsecure').checked,
-    }});
-  } catch (e) {
-    itSetRunning(false);
-    $('itStatus').textContent = 'Error'; $('itStatus').style.color = 'var(--red)'; $('itMeta').textContent = e.message;
-  }
-});
-$('itStop').addEventListener('click', () => { api('/intruder/stop', { method: 'POST' }).catch(() => {}); });
-
-function itOnStart(info) {
-  itTotal = info.total || 0; itCount = 0;
-  $('itRows').innerHTML = ''; $('itEmpty').style.display = 'none';
-  itSetRunning(true);
-  $('itStatus').textContent = `Running 0 / ${itTotal}`; $('itStatus').style.color = 'var(--amber)';
-  $('itMeta').textContent = `${info.attackType} · ${info.positions} position(s)`;
-}
-function itOnRow(row) {
-  itCount++;
-  const stClass = row.error ? 'err' : (row.statusCode ? 's' + String(row.statusCode)[0] : '');
-  const st = row.error ? 'ERR' : (row.statusCode || '—');
-  const tr = document.createElement('tr');
-  tr.innerHTML = `<td class="num">${row.index}</td><td class="num">${row.position == null ? '·' : row.position}</td>`
-    + `<td class="pl">${esc(row.payload)}</td>`
-    + `<td class="st ${stClass}" title="${esc(row.error || '')}">${st}</td>`
-    + `<td class="num">${row.error ? '' : (fmtSize(row.length) || '0 B')}</td>`
-    + `<td class="num">${row.durationMs != null ? row.durationMs + ' ms' : ''}</td>`;
-  $('itRows').appendChild(tr);
-  if (itTotal) $('itStatus').textContent = `Running ${itCount} / ${itTotal}`;
-}
-function itOnDone(s) {
-  itSetRunning(false);
-  if (s && s.error) {
-    $('itStatus').textContent = 'Error'; $('itStatus').style.color = 'var(--red)'; $('itMeta').textContent = s.error; return;
-  }
-  const done = s ? s.completed : itCount;
-  $('itStatus').textContent = (s && s.cancelled) ? `Stopped — ${done} sent` : `Done — ${done} request(s)`;
-  $('itStatus').style.color = (s && s.cancelled) ? 'var(--amber)' : 'var(--accent)';
-  if (!done) $('itEmpty').style.display = 'block';
-}
 
 /* ---------- Status ---------- */
 function applyStatus(s) {
@@ -1444,23 +1251,6 @@ $('applyScope').addEventListener('click', async () => {
 $('scopeEnabled').addEventListener('change', () => $('applyScope').click());
 $('historyScopeOnly').addEventListener('change', renderFlows);
 
-/* ================= Host exclusions (deny-list) ================= */
-const exclude = { hosts: [] };
-function applyExclusions(hosts) {
-  exclude.hosts = hosts || [];
-  $('excludeHosts').value = exclude.hosts.join('\n');
-}
-$('applyExclude').addEventListener('click', async () => {
-  const hosts = $('excludeHosts').value.split('\n').map(x => x.trim()).filter(Boolean);
-  try {
-    const r = await api('/exclusions', { method: 'POST', body: { hosts } });
-    applyExclusions(r.hosts);
-    banner(r.hosts.length
-      ? `Excluding ${r.hosts.length} host(s) — they’re no longer captured or intercepted.`
-      : 'No hosts excluded — everything is captured & intercepted again.');
-  } catch (e) { banner('Failed: ' + e.message); }
-});
-
 /* ================= Connected devices ================= */
 const connections = new Set();
 function applyConnections(list) {
@@ -1497,10 +1287,6 @@ function connectWs() {
     else if (m.type === 'intercept-config') applyInterceptConfig(m.config);
     else if (m.type === 'connections') applyConnections(m.connected);
     else if (m.type === 'scope') applyScope(m.scope);
-    else if (m.type === 'exclusions') applyExclusions(m.hosts);
-    else if (m.type === 'intruder-start') itOnStart(m.info);
-    else if (m.type === 'intruder-row') itOnRow(m.row);
-    else if (m.type === 'intruder-done') itOnDone(m.summary);
   };
   ws.onclose = () => setTimeout(connectWs, 1500);
 }
@@ -1596,8 +1382,6 @@ pushRules(); // sync saved rules to the server
 loadDesktopInfo();
 api('/connections').then(r => applyConnections(r.connected)).catch(() => {});
 api('/scope').then(applyScope).catch(() => {});
-api('/exclusions').then(r => applyExclusions(r.hosts)).catch(() => {});
-updateItPositions();
 refreshDevices(); setInterval(refreshDevices, 5000);
 api('/status').then(applyStatus).catch(() => {});
 api('/intercept').then(r => { applyInterceptConfig(r.config); intercept.queue = r.pending || []; renderIntercept(); }).catch(() => {});
