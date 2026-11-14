@@ -13,9 +13,11 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { networkInterfaces } from 'os';
+import { networkInterfaces, tmpdir } from 'os';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
+import * as fs from 'fs/promises';
+import * as path from 'path';
 import { ProxyService } from './proxy/proxy-service';
 import { AdbService, DeviceInfo } from './devices/adb-service';
 import { FridaService } from './frida/frida-service';
@@ -35,6 +37,13 @@ export interface SetupOptions {
     fridaTarget?: string;
     /** Override auto-detected host IP (useful on multi-NIC machines). */
     hostIp?: string;
+    /**
+     * Emulator capture mode: route the device's global proxy through
+     * 127.0.0.1 over an adb reverse tunnel instead of the host LAN IP. This is
+     * the reliable path for Genymotion / AVD, where the VM's own networking
+     * may not reach the host's LAN address.
+     */
+    emulator?: boolean;
 }
 
 export interface SetupResult {
@@ -74,17 +83,24 @@ export class Orchestrator {
         );
     }
 
-    /** Compute Android's subject_hash_old for the CA (needs host openssl). */
+    /**
+     * Compute Android's subject_hash_old for the CA (needs host openssl).
+     *
+     * execFile has no stdin `input` option, so we write the PEM to a temp file
+     * and feed it with `-in`. Returns undefined if openssl isn't on PATH.
+     */
     private async androidCertHash(caPem: string): Promise<string | undefined> {
+        const tmpFile = path.join(tmpdir(), `hizn-ca-${Date.now()}.pem`);
         try {
-            const { stdout } = await execFileAsync(
-                'openssl',
-                ['x509', '-inform', 'PEM', '-subject_hash_old', '-noout'],
-                { input: caPem } as any,
-            );
-            return stdout.toString().trim().split('\n')[0];
+            await fs.writeFile(tmpFile, caPem, 'utf8');
+            const { stdout } = await execFileAsync('openssl', [
+                'x509', '-inform', 'PEM', '-subject_hash_old', '-noout', '-in', tmpFile,
+            ]);
+            return stdout.toString().trim().split('\n')[0] || undefined;
         } catch {
             return undefined; // openssl unavailable → skip system-store install
+        } finally {
+            await fs.unlink(tmpFile).catch(() => {});
         }
     }
 
@@ -142,23 +158,36 @@ export class Orchestrator {
             } else {
                 await this.adb.installCA(opts.serial, ca.cert, '0', false);
                 caStep.status = 'warn';
-                caStep.detail = 'openssl missing — PEM staged at /sdcard/Download/droidmitm-ca.crt';
+                caStep.detail = 'openssl missing — PEM staged at /sdcard/Download/hizn-ca.crt';
             }
         } else {
             await this.adb.installCA(opts.serial, ca.cert, '0', false);
             caStep.status = 'warn';
-            caStep.detail = 'Non-rooted — install droidmitm-ca.crt from Settings, or use Frida';
+            caStep.detail =
+                'Non-rooted (Android ' + (device.androidVersion ?? '7+') + '): cert staged at ' +
+                '/sdcard/Download/hizn-ca.crt. Install via Settings → Security → ' +
+                'Encryption & credentials → Install a certificate → CA. NOTE: apps ignore ' +
+                'user CAs, so most HTTPS still won’t decrypt — use an emulator, root, or Frida-gadget per app.';
         }
         this.step(caStep);
 
         // 5. Point device at us
         const routeStep = push({ key: 'route', label: 'Route device traffic', status: 'running' });
+        const port = this.proxy.getPort();
+        // Default to 127.0.0.1 over the adb reverse tunnel — this works for any
+        // ADB-connected device (USB *or* Wi-Fi-adb) without the phone needing to
+        // reach the host's LAN IP. Only fall back to the LAN IP when the caller
+        // explicitly supplies one (e.g. a Wi-Fi proxy with no USB cable).
+        const useReverseProxy = !opts.hostIp;
+        const proxyHost = useReverseProxy ? '127.0.0.1' : hostIp;
         try {
-            await this.adb.setGlobalProxy(opts.serial, hostIp, this.proxy.getPort());
-            // Reverse tunnel as a USB fallback (device localhost:PORT → host).
-            await this.adb.reverse(opts.serial, this.proxy.getPort(), this.proxy.getPort());
+            // Reverse tunnel first so 127.0.0.1:PORT on the device reaches us.
+            await this.adb.reverse(opts.serial, port, port);
+            await this.adb.setGlobalProxy(opts.serial, proxyHost, port);
             routeStep.status = 'ok';
-            routeStep.detail = `global http_proxy = ${hostIp}:${this.proxy.getPort()} (+adb reverse)`;
+            routeStep.detail = useReverseProxy
+                ? `global http_proxy = 127.0.0.1:${port} (adb reverse tunnel)`
+                : `global http_proxy = ${hostIp}:${port} (+adb reverse)`;
         } catch (e: any) {
             routeStep.status = 'warn';
             routeStep.detail = 'Could not set proxy automatically: ' + e.message;
@@ -167,10 +196,32 @@ export class Orchestrator {
 
         // 6. Frida (optional)
         if (opts.fridaTarget) {
+            // 6a. Auto-provision frida-server if it's missing but we have root.
+            let fridaReady = device.fridaRunning;
+            if (!fridaReady && device.rooted && device.abi) {
+                const provStep = push({ key: 'frida-provision', label: 'Provision frida-server', status: 'running' });
+                try {
+                    const { version, arch } = await this.frida.provisionServer(opts.serial, device.abi);
+                    // Give it a moment to bind its port.
+                    await new Promise((r) => setTimeout(r, 1500));
+                    fridaReady = await this.adb.isFridaRunning(opts.serial);
+                    provStep.status = fridaReady ? 'ok' : 'warn';
+                    provStep.detail = fridaReady
+                        ? `frida-server ${version} (${arch}) running`
+                        : `Pushed ${version} (${arch}) but it isn't listening yet`;
+                } catch (e: any) {
+                    provStep.status = 'error';
+                    provStep.detail = 'Download/start failed: ' + e.message;
+                }
+                this.step(provStep);
+            }
+
             const fStep = push({ key: 'frida', label: `Frida inject → ${opts.fridaTarget}`, status: 'running' });
-            if (!device.fridaRunning) {
+            if (!fridaReady) {
                 fStep.status = 'warn';
-                fStep.detail = 'frida-server not detected on device';
+                fStep.detail = device.rooted
+                    ? 'frida-server not listening — try again'
+                    : 'Non-rooted: start frida-server/gadget manually, then retry';
             } else {
                 try {
                     const { pid } = await this.frida.inject({

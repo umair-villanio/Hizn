@@ -6,3 +6,5 @@ dist/
 .DS_Store
 ca.pem
 daemon.log
+release/
+.hizn/

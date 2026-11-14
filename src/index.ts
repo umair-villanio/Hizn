@@ -1,5 +1,5 @@
 /**
- * droidmitm entry point.
+ * hizn entry point.
  *
  * Starts the local API + UI server. Open the printed URL in a browser, or let
  * the (future) Electron shell load it.

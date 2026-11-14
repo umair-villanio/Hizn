@@ -1,86 +1,129 @@
-# droidmitm
+# Hizn
 
-One-click Android traffic interception, with upstream chaining into Burp Suite.
+One-click traffic interception for **Android *and* desktop Firefox**, with optional Burp Suite chaining — built as an original tool on open components. Point a phone (or a Firefox window) at your machine, decrypt its HTTPS, and watch (or mock/rewrite) the traffic. Flip one toggle to forward everything through Burp.
 
-Open source (AGPL-3.0). Architecture derived from a study of HTTP Toolkit's
-open-source implementation — see `NOTICE.md` for attribution and the
-[RE notes](#how-http-toolkit-does-it) below.
+> **Authorized testing only.** Use this on devices and apps you own or are explicitly permitted to test.
 
-## Architecture
+## How it works
 
 ```
-┌──────────────┐     ┌─────────────────────────────────────┐     ┌──────┐
-│ ui/ (later)  │────▶│ daemon (Node/TS)                     │────▶│ Burp │
-│              │◀────│  src/proxy  : mockttp MITM (Apache)  │     │ :8080│
-└──────────────┘ WS  │  src/devices: adbkit ADB pipeline    │     └──────┘
-                     │  src/frida  : per-app injection      │         ▲
-                     │  src/api    : REST + WS control      │   upstream chain
-                     └─────────┬───────────────────────────┘  (proxyConfig)
-                               │ adb / VpnService
-                               ▼
-                        Android device
+Android device
+   │  global http_proxy  +  adb reverse  (set automatically over ADB)
+   ▼
+hizn proxy  ──(optional upstream)──►  Burp Suite  ──►  Internet
+   │  mockttp engine + your root CA
+   ▼
+Web UI  ·  live flows, one-click connect, Burp toggle, CA download
 ```
 
-- **MITM core**: `mockttp` (Apache-2.0) — CA generation, TLS interception, HTTP/1.1+2, WebSockets.
-- **Burp chaining**: mockttp `proxyConfig` on the passthrough rules —
-  `proxyUrl: 'http://127.0.0.1:8080'` + `additionalTrustedCAs` for Burp's CA.
-- **Device pipeline** (Phase 2): adbkit — cert push, tmpfs `/system/etc/security/cacerts`
-  overlay, `adb reverse` tunnels, companion-app ACTIVATE intent.
-- **Frida pipeline** (Phase 3): `frida-js` — frida-server lifecycle, spawn-paused
-  injection of proxy-override + unpinning scripts.
-- **Companion app** (`android-app/`, Phase 4): Kotlin `VpnService` app for
-  non-rooted whole-device capture.
+- **Proxy engine:** [`mockttp`](https://github.com/httptoolkit/mockttp) — TLS interception, mocking/rewriting, and upstream-proxy chaining.
+- **Device automation:** [`@devicefarmer/adbkit`](https://github.com/DeviceFarmer/adbkit) — detect device, push CA, set proxy, open reverse tunnels.
+- **CA trust & unpinning:** [`frida-js`](https://github.com/httptoolkit/frida-js) + adapted [frida-interception-and-unpinning](https://github.com/httptoolkit/frida-interception-and-unpinning) scripts (AGPL-3.0) — inject the CA and bypass certificate pinning on modern Android.
 
-## How HTTP Toolkit does it (RE notes)
+## Prerequisites
 
-Two paths, both ending at mockttp:
+- **Node.js ≥ 20** (tested on 26)
+- **ADB** (`platform-tools`) on your `PATH`
+- *(optional, rooted-device CA install)* **OpenSSL** on your `PATH`
+- *(optional, pinning bypass)* **frida-server** running on the device
+- A device with **USB debugging** enabled, or a rooted emulator
 
-**ADB path** (`httptoolkit-server/src/interceptors/android/`)
-1. `adbkit` device detection → `getRootCommand` probes for su/Magisk
-2. Rooted: push CA to `/data/local/tmp`, then tmpfs-overlay it into
-   `/system/etc/security/cacerts` (copy out → `mount -t tmpfs` → copy back + add
-   → SELinux `chcon` → also bind-mount `/apex/com.android.conscrypt/cacerts`
-   for Android 14+ per-app visibility). Plus CT-log-list injection (Android 16+)
-   and Chrome `--ignore-certificate-errors-spki-list`.
-3. Install companion APK (`tech.httptoolkit.android.v1`, fetched from GitHub releases)
-4. `adb reverse` persistent tunnel (USB/emulator → host proxy)
-5. Intent `tech.httptoolkit.android.ACTIVATE` with base64
-   `{addresses, port, localTunnelPort, enableSocks, certFingerprint}` →
-   app starts `VpnService` routing all traffic to the proxy
+## Setup
 
-**Frida path** (`httptoolkit-server/src/interceptors/frida/` — rooted/emulator)
-1. Push + launch `frida-server`, enumerate installed app targets
-2. Spawn target app paused → probe reachable host IP → inject JS bundle
-   (proxy override + cert unpinning + fallback + root-detection disable +
-   Flutter unpinning + system-cert injection) → resume
-
-## Roadmap
-
-- [x] Phase 1 — daemon: mockttp core, CA, REST+WS API, Burp upstream toggle
-- [ ] Phase 2 — Android one-click (rooted): ADB detect, cert inject, reverse
-      tunnel, proxy routing
-- [ ] Phase 3 — Frida per-app interception + unpinning bundle
-- [ ] Phase 4 — `VpnService` companion app for non-rooted devices
-      (study `httptoolkit/httptoolkit-android`, AGPL)
-- [ ] Phase 5 — web UI (traffic list, device panel, Burp toggle)
-- [ ] Phase 6+ — your new features
-
-## Dev setup
+### Desktop app (recommended)
 
 ```bash
 npm install
-npm run dev          # daemon on :13456
+npm run electron     # builds the backend, then opens the desktop window
 ```
 
-Requires Node >= 20 and `adb` on PATH (platform-tools).
+No terminal to watch, no browser tab — the backend (ADB, mockttp, Frida) runs
+inside the Electron process and the window loads the UI on a private loopback
+port. To produce an installer:
 
 ```bash
-# Start interception proxy, chained upstream into Burp:
-curl -X POST http://127.0.0.1:13456/api/proxy/start \
-  -H 'content-type: application/json' \
-  -d '{"port":8000,"burpUrl":"http://127.0.0.1:8080","burpCaPath":"C:/path/to/burp-ca.der"}'
-
-curl http://127.0.0.1:13456/api/status
-curl http://127.0.0.1:13456/api/devices     # adb devices
-curl http://127.0.0.1:13456/api/ca.pem -o ca.pem
+npm run dist         # → release/  (NSIS .exe on Windows, .dmg on macOS, AppImage on Linux)
 ```
+
+### Headless / browser (no Electron)
+
+```bash
+npm run dev          # tsx watch — hot-reloads the backend
+```
+
+Then open the printed URL (default <http://127.0.0.1:4000>). For a production run:
+
+```bash
+npm run build
+npm start
+```
+
+## Using it
+
+1. Plug in the device (`adb devices` should list it) and hit **↻ Refresh**.
+2. *(Optional)* enter a **Frida target** app id (e.g. `com.android.chrome`) to enable CA injection + unpinning for that app. On a rooted device, One-Click Connect will **auto-download and start frida-server** for the device's ABI if it isn't already running (or use the **Set up Frida** button on its own).
+3. *(Optional)* tick **Forward all traffic to Burp** and set Burp's host/port, then **Apply upstream**. In Burp, listen on `127.0.0.1:8080` (Proxy → Options).
+4. Press **⚡ One-Click Connect**. The setup panel shows each step: device check → proxy up → host IP → CA install → traffic routing → Frida inject.
+5. Open an app on the device; flows stream into the table live.
+
+### Desktop (Firefox)
+
+Click **🦊 Launch Firefox & capture**. hizn starts the proxy and opens a
+*dedicated* Firefox profile (`~/.hizn/firefox-profile`) already pointed at
+it — your normal Firefox is untouched. **CA trust is automatic** when an NSS `certutil` is on your `PATH` — hizn
+imports the CA straight into the profile's `cert9.db`, scoped to this profile
+only (your normal Firefox and the OS trust store are never touched). If NSS
+tools aren't installed, Firefox opens on the Certificates page for a one-time
+import: **View Certificates → Authorities → Import** → pick `hizn-ca.pem`
+(path shown in the card) → tick "Trust for websites". It persists, so you only
+do it once.
+
+> NSS `certutil` ships in the `nss`/`libnss3-tools` package (Linux),
+> `brew install nss` (macOS), or Mozilla's NSS binary releases (Windows). It is
+> **not** the same as Windows' `System32\certutil.exe`, which hizn ignores.
+
+### CA trust, by device type
+
+| Device | What happens |
+|---|---|
+| **Rooted / emulator** | CA is copied into the system trust store (`/system/etc/security/cacerts`, + APEX path on Android 14+). All apps trust it. |
+| **Non-rooted** | CA is staged at `/sdcard/Download/hizn-ca.crt` for manual install (Settings → Security → Install certificate), **or** use a Frida target to inject it per-app. |
+
+## Project layout
+
+```
+src/
+  proxy/proxy-service.ts   mockttp engine, CA, Burp upstream, flow events
+  devices/adb-service.ts   ADB: detect, proxy, push CA, reverse, frida tunnel
+  frida/frida-service.ts   CA injection + unpinning payload + injection
+  orchestrator.ts          the one-click flow (ties it all together)
+  api/server.ts            REST + WebSocket bridge to the UI
+  index.ts                 entry point (headless server)
+electron/main.js           desktop shell: boots the server + opens the window
+electron/preload.js        exposes a read-only `window.hizn` marker
+scripts/frida/             adapted unpinning hook scripts (AGPL-3.0)
+ui/index.html              single-file web UI (no build step)
+```
+
+## Roadmap / extension points
+
+- ~~Burp-style interception~~ ✅ done — hold requests/responses, edit headers/body, Forward or Drop (Intercept card / header chip).
+- ~~Plugins~~ ✅ done — Burp-extension-style tabs in the intercept panel; ships a JWT decoder, plus add custom `transform(ctx)` plugins.
+- ~~Repeater~~ ✅ done — "→ Repeater" from HTTP history or a held request; edit and re-send, with status + timing.
+- ~~Match & Replace~~ ✅ done — auto-rewrite rules (request/response headers, body, URL) applied to all traffic.
+- ~~Connected-device status~~ ✅ done — live "connected" badge + one-click Disconnect.
+- ~~Target scope~~ ✅ done — limit intercept to specific hosts; "in-scope only" history filter.
+- ~~Save / export~~ ✅ done — request/response bodies in the detail pane; Copy as cURL; Export HTTP history as .har.
+- ~~Server-side history + sessions~~ ✅ done — history survives UI reconnects; Save/Load a capture session as JSON.
+- ~~Decoder~~ ✅ done — base64 / URL / hex / HTML / JWT encode-decode, with smart auto-detect.
+- ~~Dark / light theme~~ ✅ done (header toggle, follows system by default).
+- ~~Auto-connect Genymotion~~ ✅ done (detected VMs connect automatically).
+- ~~Auto-provision frida-server~~ ✅ done (download + push + start by ABI).
+- ~~Electron shell~~ ✅ done (`npm run electron`; `npm run dist` builds installers).
+- **Server-side plugins** — today plugins run in the UI; add a backend plugin host for traffic rewriting.
+- **WebSocket interception** — pause/edit WS frames (today they pass through).
+- **Companion Android app** — an "Activate" intent for one-tap device-side setup.
+
+## License
+
+AGPL-3.0-only. Includes adapted AGPL-3.0 scripts from httptoolkit/frida-interception-and-unpinning. If you distribute a modified build, you must share your source.

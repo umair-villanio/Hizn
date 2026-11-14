@@ -20,8 +20,14 @@ export interface DeviceInfo {
     androidVersion?: string;
     sdk?: number;
     abi?: string;
+    manufacturer?: string;
+    hardware?: string;
     rooted: boolean;
     fridaRunning: boolean;
+    /** Any emulator (Genymotion, AVD/goldfish/ranchu, vbox). */
+    isEmulator: boolean;
+    /** Specifically a Genymotion VM (VirtualBox-backed). */
+    isGenymotion: boolean;
 }
 
 export class AdbService {
@@ -38,7 +44,10 @@ export class AdbService {
     }
 
     private async describe(serial: string, type: string): Promise<DeviceInfo> {
-        const base: DeviceInfo = { serial, type, rooted: false, fridaRunning: false };
+        const base: DeviceInfo = {
+            serial, type, rooted: false, fridaRunning: false,
+            isEmulator: false, isGenymotion: false,
+        };
         if (type !== 'device' && type !== 'emulator') return base;
 
         try {
@@ -47,12 +56,47 @@ export class AdbService {
             const sdk = await this.getProp(serial, 'ro.build.version.sdk');
             base.sdk = sdk ? parseInt(sdk.trim(), 10) : undefined;
             base.abi = (await this.getProp(serial, 'ro.product.cpu.abi'))?.trim();
+            base.manufacturer = (await this.getProp(serial, 'ro.product.manufacturer'))?.trim();
+            base.hardware = (await this.getProp(serial, 'ro.hardware'))?.trim();
             base.rooted = await this.isRooted(serial);
             base.fridaRunning = await this.isFridaRunning(serial);
+
+            // Emulator / Genymotion fingerprinting.
+            const hw = (base.hardware ?? '').toLowerCase();
+            const mfr = (base.manufacturer ?? '').toLowerCase();
+            const prod = ((await this.getProp(serial, 'ro.product.name')) ?? '').toLowerCase();
+            base.isGenymotion =
+                hw.includes('vbox') ||               // Genymotion = VirtualBox
+                mfr.includes('geny') ||
+                prod.includes('vbox') ||
+                prod.includes('genymotion');
+            base.isEmulator =
+                base.isGenymotion ||
+                type === 'emulator' ||
+                hw.includes('goldfish') || hw.includes('ranchu') || // Google AVD
+                /^emulator-\d+$/.test(serial) ||
+                /^\d+\.\d+\.\d+\.\d+:\d+$/.test(serial); // tcp serial (geny default)
         } catch {
             // Device may have gone away mid-probe; return what we have.
         }
         return base;
+    }
+
+    /**
+     * Connect to a device over TCP (e.g. a Genymotion VM at 192.168.56.x:5555
+     * that isn't auto-attached). Returns the resolved serial on success.
+     */
+    async connectTcp(hostPort: string): Promise<string> {
+        const [host, portStr] = hostPort.split(':');
+        const port = portStr ? parseInt(portStr, 10) : 5555;
+        return this.client.connect(host, port);
+    }
+
+    /** First connected Genymotion VM, or undefined if none is attached. */
+    async findGenymotion(): Promise<DeviceInfo | undefined> {
+        const devices = await this.listDevices();
+        return devices.find((d) => d.isGenymotion)
+            ?? devices.find((d) => d.isEmulator); // fall back to any emulator
     }
 
     private async getProp(serial: string, prop: string): Promise<string | undefined> {
@@ -98,7 +142,7 @@ export class AdbService {
     }
 
     /**
-     * Point the device's global HTTP proxy at the host running droidmitm.
+     * Point the device's global HTTP proxy at the host running hizn.
      * Apps that honour the system proxy will now flow through us.
      */
     async setGlobalProxy(serial: string, host: string, port: number): Promise<void> {
@@ -162,7 +206,7 @@ export class AdbService {
         androidHash: string,
         rooted: boolean,
     ): Promise<'system' | 'user-manual'> {
-        const tmp = `/data/local/tmp/droidmitm-ca.pem`;
+        const tmp = `/data/local/tmp/hizn-ca.pem`;
         await this.pushFile(serial, Buffer.from(caPem), tmp);
 
         if (rooted) {
@@ -181,7 +225,7 @@ export class AdbService {
         }
 
         // Non-rooted: leave the PEM on /sdcard for manual install.
-        await this.pushFile(serial, Buffer.from(caPem), '/sdcard/Download/droidmitm-ca.crt');
+        await this.pushFile(serial, Buffer.from(caPem), '/sdcard/Download/hizn-ca.crt');
         return 'user-manual';
     }
 }

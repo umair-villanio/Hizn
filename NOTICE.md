@@ -1,6 +1,6 @@
 # Attribution
 
-droidmitm is licensed under AGPL-3.0 (see LICENSE).
+hizn is licensed under AGPL-3.0 (see LICENSE).
 
 This project's design is derived from study of HTTP Toolkit
 (https://github.com/httptoolkit), copyright Tim Perry / httptoolkit,

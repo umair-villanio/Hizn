@@ -1,9 +1,10 @@
 {
-  "name": "droidmitm",
+  "name": "hizn",
   "version": "0.1.0",
   "description": "One-click Android traffic interception with Burp chaining. AGPL-3.0.",
   "license": "AGPL-3.0-only",
   "private": true,
+  "main": "electron/main.js",
   "engines": {
     "node": ">=20"
   },
@@ -11,7 +12,11 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "electron": "npm run build && electron .",
+    "electron:dev": "electron .",
+    "dist": "npm run build && electron-builder",
+    "dist:dir": "npm run build && electron-builder --dir"
   },
   "dependencies": {
     "@devicefarmer/adbkit": "^3.3.9",
@@ -25,7 +30,42 @@
     "@types/express": "^5.0.0",
     "@types/node": "^24.0.0",
     "@types/ws": "^8.18.0",
+    "electron": "^34.2.0",
+    "electron-builder": "^25.1.8",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0"
+  },
+  "build": {
+    "appId": "dev.hizn.app",
+    "productName": "Hizn",
+    "files": [
+      "electron/**/*",
+      "dist/**/*",
+      "ui/**/*",
+      "scripts/**/*",
+      "package.json"
+    ],
+    "extraMetadata": {
+      "main": "electron/main.js"
+    },
+    "directories": {
+      "output": "release"
+    },
+    "win": {
+      "target": "nsis",
+      "artifactName": "hizn-${version}-setup.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "mac": {
+      "target": "dmg",
+      "category": "public.app-category.developer-tools"
+    },
+    "linux": {
+      "target": "AppImage",
+      "category": "Development"
+    }
   }
 }

@@ -1,0 +1,1384 @@
+<!doctype html>
+<!--
+  hizn UI — single-file, no build step.
+  REST (/api/*) + WebSocket (/ws) to the local backend.
+  SPDX-License-Identifier: AGPL-3.0-only
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Hizn</title>
+<style>
+  :root {
+    /* Dark (default) — deep indigo-slate with an emerald accent */
+    --bg: #0b0f17; --panel: #121826; --panel-2: #161d2e; --raise: #1f2940;
+    --border: #2a3650; --border-soft: #202a40;
+    --text: #eef2f8; --muted: #9fb0c6; --faint: #697a93;
+    --accent: #34d399; --accent-2: #10b981; --accent-ink: #022c1c;
+    --blue: #7cc4ff; --amber: #f5c451; --red: #ff6f6f; --purple: #c4a2ff; --teal: #5eead4;
+    --shadow: 0 8px 28px rgba(0,0,0,.45);
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+    --radius: 12px;
+  }
+  :root[data-theme="light"] {
+    /* Light — soft paper with the same emerald accent */
+    --bg: #f4f6fb; --panel: #ffffff; --panel-2: #f7f9fd; --raise: #eef2f8;
+    --border: #d8e0ec; --border-soft: #e6ebf3;
+    --text: #141b2a; --muted: #4a5668; --faint: #7a8699;
+    --accent: #0ea371; --accent-2: #0b8f63; --accent-ink: #ffffff;
+    --blue: #2a7ff0; --amber: #b8860b; --red: #dc3b3b; --purple: #7c4dff; --teal: #0d9488;
+    --shadow: 0 8px 24px rgba(30,50,90,.12);
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 15px; line-height: 1.5;
+    height: 100vh; display: flex; flex-direction: column; overflow: hidden;
+  }
+
+  /* ---------- Header ---------- */
+  header {
+    display: flex; align-items: center; gap: 14px; padding: 14px 22px;
+    border-bottom: 1px solid var(--border); background: var(--panel);
+    flex: none; flex-wrap: wrap; row-gap: 10px;
+  }
+  .brand { display: flex; align-items: center; gap: 10px; }
+  .brand .logo {
+    width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center;
+    background: linear-gradient(135deg, var(--accent), var(--accent-2)); color: var(--accent-ink);
+    font-weight: 800; font-size: 16px;
+  }
+  .brand h1 { font-size: 18px; margin: 0; font-weight: 700; letter-spacing: .2px; }
+  .brand .tag { color: var(--faint); font-size: 12.5px; margin-top: -2px; }
+  .spacer { flex: 1; }
+  .header-actions { margin-left: auto; display: flex; align-items: center; flex-wrap: wrap; gap: 9px; justify-content: flex-end; }
+  .status-chip {
+    display: flex; align-items: center; gap: 7px; padding: 5px 11px;
+    border: 1px solid var(--border); border-radius: 999px; font-size: 12.5px; color: var(--muted);
+    background: var(--bg); white-space: nowrap;
+  }
+  .status-chip .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--faint); }
+  .status-chip.live .dot { background: var(--accent); box-shadow: 0 0 10px var(--accent); }
+  .status-chip.live { color: var(--text); border-color: #2f6b43; }
+  .btn {
+    font: inherit; font-size: 14px; cursor: pointer; border-radius: 9px;
+    border: 1px solid var(--border); background: var(--raise); color: var(--text);
+    padding: 9px 14px; transition: border-color .15s, background .15s;
+  }
+  .btn:hover { border-color: var(--blue); }
+  .btn.ghost { background: transparent; }
+
+  /* ---------- Layout ---------- */
+  .layout { display: grid; grid-template-columns: auto 1fr; flex: 1; min-height: 0; }
+  .sidebar { border-right: 1px solid var(--border); background: var(--panel); min-height: 0; display: flex; }
+  .main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+
+  /* ---------- Sidebar rail + section tabs ---------- */
+  .rail { display: flex; flex-direction: column; gap: 3px; padding: 10px 7px; border-right: 1px solid var(--border-soft); flex: none; width: 78px; overflow-y: auto; min-height: 0; }
+  .rail-btn { font: inherit; font-size: 10.5px; font-weight: 650; color: var(--faint); background: none; border: none; border-radius: 9px; padding: 9px 4px; cursor: pointer; display: flex; flex-direction: column; align-items: center; gap: 5px; }
+  .rail-btn .ri { font-size: 16px; line-height: 1; }
+  .rail-btn:hover { color: var(--text); background: var(--panel-2); }
+  .rail-btn.active { color: var(--accent); background: var(--raise); }
+  .sect-panel { width: 296px; overflow-y: auto; padding: 14px; min-height: 0; }
+  .sidebar.collapsed .sect-panel { display: none; }
+  .sect { display: none; }
+  .sect.active { display: block; }
+  @media (max-width: 820px) { .sect-panel { width: 240px; } }
+
+  .card { background: var(--panel-2); border: 1px solid var(--border-soft); border-radius: var(--radius); padding: 16px; margin-bottom: 16px; }
+  .card .head { display: flex; align-items: center; gap: 9px; margin-bottom: 13px; }
+  .card .head .num {
+    width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center;
+    background: var(--raise); color: var(--muted); font-size: 12px; font-weight: 700; flex: none;
+  }
+  .card .head h2 { font-size: 14px; margin: 0; font-weight: 650; letter-spacing: .2px; }
+  .card .head .hint { color: var(--faint); font-size: 12px; margin-left: auto; }
+
+  .field { margin-bottom: 12px; }
+  .field > label { display: block; color: var(--muted); font-size: 12.5px; margin-bottom: 5px; }
+  select, input[type=text] {
+    width: 100%; font: inherit; font-size: 14px; background: var(--bg); color: var(--text);
+    border: 1px solid var(--border); border-radius: 9px; padding: 10px 11px;
+  }
+  select:focus, input:focus { outline: none; border-color: var(--blue); }
+
+  .btn-primary {
+    width: 100%; font: inherit; font-size: 16px; font-weight: 750; cursor: pointer;
+    border: none; border-radius: 11px; padding: 15px; color: var(--accent-ink);
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    display: flex; align-items: center; justify-content: center; gap: 9px;
+    box-shadow: 0 4px 14px rgba(16,185,129,.28);
+  }
+  .btn-primary:hover { filter: brightness(1.05); }
+  .btn-primary:disabled { opacity: .55; cursor: progress; }
+  .btn-row { display: flex; gap: 9px; margin-top: 10px; }
+  .btn-row .btn { flex: 1; }
+  .btn.danger { color: var(--red); border-color: #5a3330; }
+
+  .meta-line { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 11px; }
+  .tag-pill { font-size: 12px; padding: 3px 9px; border-radius: 999px; background: var(--raise); color: var(--muted); border: 1px solid var(--border-soft); }
+  .tag-pill.good { color: var(--accent); border-color: #2f6b43; }
+  .tag-pill.bad { color: var(--amber); }
+
+  .toggle { display: flex; align-items: center; gap: 10px; cursor: pointer; margin-bottom: 12px; user-select: none; }
+  .toggle input { position: absolute; opacity: 0; }
+  .toggle .track { width: 40px; height: 23px; border-radius: 999px; background: var(--raise); border: 1px solid var(--border); position: relative; transition: background .15s; flex: none; }
+  .toggle .track::after { content: ""; position: absolute; top: 2px; left: 2px; width: 17px; height: 17px; border-radius: 50%; background: var(--muted); transition: transform .15s, background .15s; }
+  .toggle input:checked + .track { background: #1f5134; border-color: #2f6b43; }
+  .toggle input:checked + .track::after { transform: translateX(17px); background: var(--accent); }
+  .toggle .label { font-size: 14px; }
+
+  .flow-diagram { font-family: var(--mono); font-size: 11.5px; color: var(--faint); margin-top: 10px; text-align: center; letter-spacing: .3px; }
+  .geny-hint { color: var(--muted); font-size: 12px; margin-top: 9px; line-height: 1.45; }
+  .geny-hint b { color: var(--text); font-weight: 650; }
+  .or-divider { display: flex; align-items: center; gap: 10px; margin: 15px 0 13px; color: var(--faint); font-size: 11.5px; }
+  .or-divider::before, .or-divider::after { content: ""; flex: 1; height: 1px; background: var(--border-soft); }
+
+  /* ---------- Steps ---------- */
+  .steps { list-style: none; margin: 0; padding: 0; }
+  .steps li { display: flex; gap: 10px; padding: 9px 0; border-bottom: 1px solid var(--border-soft); }
+  .steps li:last-child { border-bottom: 0; }
+  .steps .ic { width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; flex: none; background: var(--raise); color: var(--faint); }
+  .steps .ic.ok { background: #16351f; color: var(--accent); }
+  .steps .ic.warn { background: #3a2f12; color: var(--amber); }
+  .steps .ic.error { background: #3a1d1b; color: var(--red); }
+  .steps .ic.running { background: #16293f; color: var(--blue); }
+  .steps .body .lbl { font-size: 13.5px; }
+  .steps .body .detail { color: var(--faint); font-size: 12px; margin-top: 1px; }
+  .placeholder { color: var(--faint); font-size: 13px; }
+
+  /* ---------- Traffic ---------- */
+  .toolbar { display: flex; align-items: center; gap: 12px; padding: 12px 18px; border-bottom: 1px solid var(--border); background: var(--panel); }
+  .toolbar .title { font-weight: 650; font-size: 15px; }
+  .toolbar input { flex: 1; max-width: 340px; }
+  .toolbar .count { color: var(--muted); font-size: 13px; }
+  .split { flex: 1; display: flex; min-height: 0; }
+  .flows { flex: 1; overflow-y: auto; min-width: 0; }
+  table { width: 100%; border-collapse: collapse; }
+  thead th {
+    position: sticky; top: 0; z-index: 1; background: var(--panel); color: var(--faint);
+    font-weight: 600; font-size: 11.5px; text-transform: uppercase; letter-spacing: .5px;
+    text-align: left; padding: 9px 14px; border-bottom: 1px solid var(--border);
+  }
+  tbody td { padding: 9px 14px; border-bottom: 1px solid var(--border-soft); font-size: 13.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  tbody tr { cursor: pointer; }
+  tbody tr:hover { background: var(--panel-2); }
+  tbody tr.sel { background: var(--raise); }
+  td.method { font-family: var(--mono); font-weight: 700; font-size: 12.5px; }
+  td.url { max-width: 1px; width: 100%; }
+  td.url .host { color: var(--text); }
+  td.url .path { color: var(--muted); font-family: var(--mono); font-size: 12.5px; }
+  td.status { font-family: var(--mono); font-weight: 650; }
+  td.size { color: var(--faint); font-family: var(--mono); font-size: 12.5px; text-align: right; }
+  .m-GET { color: var(--blue); } .m-POST { color: var(--accent); } .m-PUT { color: var(--amber); }
+  .m-DELETE { color: var(--red); } .m-PATCH { color: var(--purple); } .m-HEAD,.m-OPTIONS { color: var(--muted); }
+  .s2 { color: var(--accent); } .s3 { color: var(--blue); } .s4 { color: var(--amber); } .s5 { color: var(--red); }
+
+  .detail-pane { width: 420px; border-left: 1px solid var(--border); background: var(--panel); overflow-y: auto; flex: none; display: none; }
+  .detail-pane.open { display: block; }
+  .detail-pane .dhead { display: flex; align-items: center; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--panel); }
+  .detail-pane .dhead .close { margin-left: auto; cursor: pointer; color: var(--muted); font-size: 20px; line-height: 1; }
+  .detail-pane .section { padding: 14px 16px; border-bottom: 1px solid var(--border-soft); }
+  .detail-pane .section h3 { font-size: 11.5px; text-transform: uppercase; letter-spacing: .5px; color: var(--faint); margin: 0 0 9px; }
+  .kv { display: grid; grid-template-columns: 120px 1fr; gap: 4px 12px; font-size: 12.5px; }
+  .kv .k { color: var(--muted); font-family: var(--mono); word-break: break-all; }
+  .kv .v { color: var(--text); font-family: var(--mono); word-break: break-all; }
+  .url-full { font-family: var(--mono); font-size: 12.5px; color: var(--blue); word-break: break-all; }
+
+  .empty { padding: 60px 20px; text-align: center; color: var(--faint); }
+  .empty .big { font-size: 15px; color: var(--muted); margin-bottom: 6px; }
+  a { color: var(--blue); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .banner { display: none; padding: 10px 18px; font-size: 13.5px; background: var(--panel-2); color: var(--blue); border-bottom: 1px solid var(--border); }
+  .banner.show { display: block; }
+
+  /* ---------- Tabs (main area) ---------- */
+  .tabbar { display: flex; align-items: center; gap: 4px; padding: 0 14px; background: var(--panel); border-bottom: 1px solid var(--border); }
+  .tab { font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; background: none; border: none; color: var(--muted); padding: 13px 14px; border-bottom: 2px solid transparent; display: flex; align-items: center; gap: 7px; }
+  .tab:hover { color: var(--text); }
+  .tab.active { color: var(--text); border-bottom-color: var(--accent); }
+  .tab .badge { min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px; background: var(--amber); color: #2a1e00; font-size: 11px; font-weight: 800; display: none; align-items: center; justify-content: center; }
+  .tab .badge.show { display: inline-flex; }
+  .tab .badge2 { color: var(--faint); font-size: 12px; font-weight: 600; }
+  .view { flex: 1; min-height: 0; display: none; flex-direction: column; }
+  .view.active { display: flex; }
+
+  /* ---------- Intercept panel (now the Intercept tab body) ---------- */
+  .intercept-panel { flex: 1; min-height: 0; flex-direction: column; background: var(--panel); display: none; }
+  .intercept-panel.open { display: flex; }
+  .ip-empty { flex: 1; display: none; align-items: center; justify-content: center; flex-direction: column; text-align: center; color: var(--faint); padding: 40px; }
+  .ip-empty.show { display: flex; }
+  .ip-empty .big { font-size: 15px; color: var(--muted); margin-bottom: 6px; }
+  .ip-head { display: flex; align-items: center; gap: 10px; padding: 11px 18px; border-bottom: 1px solid var(--border-soft); }
+  .ip-kind { font-weight: 700; font-size: 14px; color: var(--amber); }
+  .ip-queue { font-size: 12px; color: var(--muted); background: var(--raise); padding: 2px 9px; border-radius: 999px; }
+  .ip-line { font-family: var(--mono); font-size: 12.5px; padding: 9px 18px; color: var(--text); background: var(--panel-2); border-bottom: 1px solid var(--border-soft); word-break: break-all; }
+  .ip-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 12px 18px; min-height: 0; overflow: auto; }
+  .ip-col { display: flex; flex-direction: column; min-width: 0; }
+  .ip-lbl { font-size: 11.5px; text-transform: uppercase; letter-spacing: .5px; color: var(--faint); margin-bottom: 5px; }
+  .ip-note { text-transform: none; letter-spacing: 0; color: var(--amber); }
+  .ip-text { width: 100%; min-height: 150px; resize: vertical; font-family: var(--mono); font-size: 12.5px; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 9px; padding: 10px; line-height: 1.5; }
+  .ip-text:focus { outline: none; border-color: var(--blue); }
+  .ip-grid { flex: 1; }
+  .ip-raw-wrap { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 12px 18px; }
+  .ip-raw-wrap .ip-text { flex: 1; min-height: 160px; }
+  .ip-actions { display: flex; align-items: center; gap: 10px; padding: 11px 18px; border-top: 1px solid var(--border-soft); background: var(--panel); flex-wrap: wrap; }
+  .ip-hint { color: var(--faint); font-size: 12px; }
+  .ip-resp { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); cursor: pointer; user-select: none; }
+  .ip-resp input { accent-color: var(--accent); width: 15px; height: 15px; }
+
+  /* ---------- Repeater ---------- */
+  #view-repeater { overflow: auto; }
+  .rp-req, .rp-res { display: flex; flex-direction: column; }
+  .rp-res { border-top: 2px solid var(--border); }
+  .rp-line { display: flex; gap: 8px; align-items: center; padding: 12px 18px 0; }
+  .rp-line input { flex: 1; }
+  .rp-res-head { display: flex; align-items: center; gap: 10px; padding: 11px 18px 0; }
+  .rp-status { font-weight: 700; font-size: 14px; }
+  #view-repeater .ip-text { min-height: 120px; }
+
+  /* ---------- Decoder ---------- */
+  #view-decoder { overflow: auto; }
+  .dec-wrap { display: flex; flex-direction: column; gap: 10px; padding: 14px 18px; min-height: 0; }
+  .dec-wrap .ip-text { min-height: 130px; }
+  .dec-bar { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; }
+  .dec-group { display: flex; align-items: center; gap: 5px; }
+  .dec-group b { font-size: 12px; color: var(--muted); margin-right: 2px; }
+  .dec-group .btn { padding: 5px 9px; font-size: 12.5px; }
+  .dec-outhead { display: flex; align-items: center; gap: 10px; }
+  .dec-outhead label { margin-right: auto; }
+
+  /* ---------- Proxy setup card ---------- */
+  .copy-row { display: flex; gap: 8px; align-items: center; }
+  .copy-row code { flex: 1; font-family: var(--mono); font-size: 13.5px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 9px 11px; color: var(--accent); }
+
+  /* ---------- Plugins ---------- */
+  .plugin-tabs { display: flex; gap: 6px; flex-wrap: wrap; }
+  .plugin-tab { font-size: 12px; padding: 4px 11px; border-radius: 999px; border: 1px solid var(--border); background: var(--raise); color: var(--muted); cursor: pointer; }
+  .plugin-tab:hover { border-color: var(--blue); color: var(--text); }
+  .plugin-tab.active { background: var(--blue); color: var(--accent-ink); border-color: var(--blue); }
+  .plugin-out { display: none; padding: 12px 18px; border-top: 1px solid var(--border-soft); background: var(--panel-2); max-height: 220px; overflow: auto; }
+  .plugin-out.open { display: block; }
+  .plugin-out pre { margin: 0; font-family: var(--mono); font-size: 12px; color: var(--text); white-space: pre-wrap; word-break: break-all; }
+  .plugin-out .jwt-seg { margin-bottom: 10px; }
+  .plugin-out .jwt-seg .h { color: var(--faint); font-size: 11px; text-transform: uppercase; letter-spacing: .5px; margin-bottom: 3px; }
+  .plugin-out .jwt-head { color: var(--purple); } .plugin-out .jwt-payload { color: var(--teal); } .plugin-out .jwt-sig { color: var(--amber); }
+
+  /* Plugins manager card */
+  .plugin-list { display: flex; flex-direction: column; gap: 7px; }
+  .plugin-row { display: flex; align-items: center; gap: 9px; font-size: 13px; padding: 7px 10px; border: 1px solid var(--border-soft); border-radius: 8px; background: var(--panel-2); }
+  .plugin-row .pname { font-weight: 600; }
+  .plugin-row .pdesc { color: var(--faint); font-size: 12px; }
+  .plugin-row input[type=checkbox] { accent-color: var(--accent); width: 16px; height: 16px; }
+  .rule-form { display: flex; flex-direction: column; gap: 7px; margin-top: 10px; }
+  .rule-form input, .rule-form select { font-size: 13px; padding: 8px 10px; }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">
+    <div class="logo">◆</div>
+    <div>
+      <h1>Hizn</h1>
+      <div class="tag">Android traffic interception</div>
+    </div>
+  </div>
+  <div class="header-actions">
+    <div id="proxyChip" class="status-chip"><span class="dot"></span><span id="proxyChipText">Proxy stopped</span></div>
+    <div id="burpChip" class="status-chip"><span class="dot"></span><span id="burpChipText">Burp off</span></div>
+    <div id="interceptChip" class="status-chip" title="Toggle interception" style="cursor:pointer"><span class="dot"></span><span id="interceptChipText">Intercept off</span></div>
+    <button id="themeToggle" class="btn ghost" title="Toggle light / dark">🌙</button>
+    <a href="/api/ca" download="hizn-ca.crt"><button class="btn">⬇ CA cert</button></a>
+  </div>
+</header>
+
+<div class="layout">
+  <!-- ---------------- Sidebar ---------------- -->
+  <aside class="sidebar">
+    <nav class="rail">
+      <button class="rail-btn active" data-sec="connect"><span class="ri">⚡</span>Connect</button>
+      <button class="rail-btn" data-sec="proxy"><span class="ri">◆</span>Proxy</button>
+      <button class="rail-btn" data-sec="burp"><span class="ri">⛓</span>Burp</button>
+      <button class="rail-btn" data-sec="intercept"><span class="ri">⏸</span>Intercept</button>
+      <button class="rail-btn" data-sec="rules"><span class="ri">⇄</span>Rules</button>
+      <button class="rail-btn" data-sec="scope"><span class="ri">◎</span>Scope</button>
+      <button class="rail-btn" data-sec="plugins"><span class="ri">▣</span>Plugins</button>
+    </nav>
+    <div class="sect-panel">
+    <section id="sec-proxy" class="sect">
+    <!-- Proxy setup (Burp-style) -->
+    <div class="card">
+      <div class="head"><h2>Proxy setup</h2><span id="setupProxyState" class="hint">stopped</span></div>
+      <div class="field">
+        <label>Proxy listener</label>
+        <div class="copy-row"><code id="proxyAddr">127.0.0.1:—</code><button id="copyProxy" class="btn ghost" style="padding:9px 12px">Copy</button></div>
+      </div>
+      <div class="btn-row">
+        <button id="startProxyBtn" class="btn" style="flex:1">▶ Start proxy</button>
+        <a href="/api/ca" download="hizn-ca.crt" style="flex:1"><button class="btn" style="width:100%">⬇ CA cert</button></a>
+      </div>
+      <div class="geny-hint">
+        Burp-style: point your browser/device proxy at <b id="proxyAddr2">this listener</b>, install the CA cert, and trust it — then traffic flows in. No browser is launched for you.
+        <span style="color:var(--faint)">Optional: <a id="launchFirefox" href="#">launch a pre-wired Firefox profile</a> (<span id="ffFound">checking…</span>).</span>
+      </div>
+      <div id="ffCaSteps" class="geny-hint" style="display:none">
+        <b>One-time CA import</b> in that Firefox (opens on the Certificates page): <b>View Certificates → Authorities → Import</b> → choose <code id="ffCaPath">hizn-ca.pem</code> → tick “Trust for websites”.
+      </div>
+      <input type="hidden" id="ffProxyAddr" />
+    </div>
+    </section>
+
+    <section id="sec-connect" class="sect active">
+    <!-- Device + one-click connect -->
+    <div class="card">
+      <div class="head"><h2>Android device</h2><span id="deviceConnState" class="hint" style="margin-left:auto"></span><button id="refreshDevices" class="btn ghost" style="padding:5px 10px;font-size:12.5px;margin-left:8px">↻ Refresh</button></div>
+      <div class="field">
+        <select id="deviceSelect"><option value="">No devices detected</option></select>
+      </div>
+      <div id="deviceMeta" class="meta-line"></div>
+      <button id="deviceDisconnect" class="btn danger" style="width:100%;margin-top:10px;display:none">⏏ Disconnect device</button>
+    </div>
+
+    <div class="card">
+      <div class="head"><h2>Connect</h2><span class="hint">one click</span></div>
+      <button id="genyBtn" class="btn-primary">▶ Connect Genymotion — capture all traffic</button>
+      <div class="geny-hint">Finds your running Genymotion VM and routes <b>every app's</b> HTTPS through hizn (system CA, no per-app setup).</div>
+      <div class="or-divider"><span>or pick a device manually</span></div>
+      <div class="field">
+        <label>App to unpin with Frida <span style="color:var(--faint)">(optional)</span></label>
+        <input id="fridaTarget" type="text" placeholder="com.android.chrome" />
+      </div>
+      <button id="connectBtn" class="btn" style="width:100%">⚡ Connect selected device</button>
+      <div class="btn-row">
+        <button id="fridaBtn" class="btn">Set up Frida</button>
+        <button id="disconnectBtn" class="btn danger">Disconnect</button>
+      </div>
+    </div>
+
+    <!-- Progress -->
+    <div class="card">
+      <div class="head"><h2>Setup progress</h2></div>
+      <ul id="steps" class="steps"><li><span class="placeholder">Press “Connect” to begin.</span></li></ul>
+    </div>
+    </section>
+
+    <section id="sec-burp" class="sect">
+    <div class="card">
+      <div class="head"><h2>Chain to Burp</h2><span class="hint">optional</span></div>
+      <label class="toggle">
+        <input type="checkbox" id="burpEnabled" /><span class="track"></span>
+        <span class="label">Forward all traffic to Burp</span>
+      </label>
+      <div class="field"><label>Burp host</label><input id="burpHost" type="text" value="127.0.0.1" /></div>
+      <div class="field"><label>Burp port</label><input id="burpPort" type="text" value="8080" /></div>
+      <button id="applyBurp" class="btn" style="width:100%">Apply</button>
+      <div class="flow-diagram">device → hizn → Burp → internet</div>
+    </div>
+
+    </section>
+
+    <section id="sec-intercept" class="sect">
+    <div class="card">
+      <div class="head"><h2>Intercept</h2><span class="hint">Burp-style</span></div>
+      <label class="toggle">
+        <input type="checkbox" id="interceptEnabled" /><span class="track"></span>
+        <span class="label">Intercept is on</span>
+      </label>
+      <label class="toggle" style="margin-left:4px">
+        <input type="checkbox" id="interceptRequests" checked /><span class="track"></span>
+        <span class="label">Hold requests</span>
+      </label>
+      <label class="toggle" style="margin-left:4px">
+        <input type="checkbox" id="interceptResponses" /><span class="track"></span>
+        <span class="label">Hold all responses</span>
+      </label>
+      <div class="geny-hint">Held traffic pauses in the <b>Intercept</b> tab until you <b>Forward</b> or <b>Drop</b>. To see one request’s response, tick <b>Intercept response</b> on that request instead of holding every response.</div>
+    </div>
+
+    </section>
+
+    <section id="sec-rules" class="sect">
+    <div class="card">
+      <div class="head"><h2>Match &amp; Replace</h2></div>
+      <div id="ruleList" class="plugin-list"></div>
+      <div class="rule-form">
+        <select id="rulePart">
+          <option value="request-header">Request header</option>
+          <option value="request-body">Request body</option>
+          <option value="request-url">Request URL</option>
+          <option value="response-header">Response header</option>
+          <option value="response-body">Response body</option>
+        </select>
+        <input id="ruleMatch" type="text" placeholder="match (regex)" />
+        <input id="ruleReplace" type="text" placeholder="replace with" />
+        <button id="addRule" class="btn" style="width:100%">+ Add rule</button>
+      </div>
+      <div class="geny-hint">Auto-rewrites all traffic. e.g. <code>User-Agent: .*</code> → <code>User-Agent: hizn</code>.</div>
+    </div>
+
+    </section>
+
+    <section id="sec-scope" class="sect">
+    <div class="card">
+      <div class="head"><h2>Target scope</h2></div>
+      <label class="toggle">
+        <input type="checkbox" id="scopeEnabled" /><span class="track"></span>
+        <span class="label">Limit intercept to scope</span>
+      </label>
+      <div class="field">
+        <label>In-scope hosts <span style="color:var(--faint)">(one per line, <code>*</code> wildcard)</span></label>
+        <textarea id="scopeHosts" class="ip-text" style="min-height:70px" spellcheck="false" placeholder="example.com&#10;*.api.example.com"></textarea>
+      </div>
+      <button id="applyScope" class="btn" style="width:100%">Apply scope</button>
+      <div class="geny-hint">When on, only these hosts are held by Intercept. Empty = everything. The HTTP history “in-scope only” filter uses the same list.</div>
+    </div>
+
+    </section>
+
+    <section id="sec-plugins" class="sect">
+    <div class="card">
+      <div class="head"><h2>Plugins</h2><button id="addPlugin" class="btn ghost" style="margin-left:auto;padding:5px 10px;font-size:12.5px">+ Add</button></div>
+      <div id="pluginList" class="plugin-list"></div>
+      <div class="geny-hint">Enabled plugins add a tab to the Intercept panel (like Burp extensions). Add custom ones — a tiny JS <code>transform(ctx)</code> that returns text to display.</div>
+    </div>
+
+    </section>
+    </div>
+  </aside>
+
+  <!-- ---------------- Main ---------------- -->
+  <main class="main">
+    <div id="banner" class="banner"></div>
+
+    <!-- Tabs: Intercept | HTTP history -->
+    <div class="tabbar">
+      <button class="tab active" data-view="intercept">Intercept <span id="tabInterceptBadge" class="badge">0</span></button>
+      <button class="tab" data-view="history">HTTP history <span id="tabHistoryCount" class="badge2">0</span></button>
+      <button class="tab" data-view="repeater">Repeater</button>
+      <button class="tab" data-view="decoder">Decoder</button>
+    </div>
+
+    <!-- Intercept view: shows ONLY the currently held request/response -->
+    <section id="view-intercept" class="view active">
+      <div id="interceptPanel" class="intercept-panel">
+        <div class="ip-head">
+          <span id="ipKind" class="ip-kind">Request held</span>
+          <span id="ipQueue" class="ip-queue">1 queued</span>
+          <div class="spacer"></div>
+          <div id="pluginTabs" class="plugin-tabs"></div>
+        </div>
+        <div id="ipLine" class="ip-line"></div>
+        <div class="ip-raw-wrap">
+          <label class="ip-lbl">Raw <span id="ipBodyNote" class="ip-note"></span></label>
+          <textarea id="ipRaw" class="ip-text" spellcheck="false"></textarea>
+        </div>
+        <div id="pluginOut" class="plugin-out"></div>
+        <div class="ip-actions">
+          <button id="ipForward" class="btn-primary" style="width:auto;padding:11px 22px">▶ Forward</button>
+          <button id="ipDrop" class="btn danger">✕ Drop</button>
+          <label id="ipRespWrap" class="ip-resp"><input type="checkbox" id="ipInterceptResp" /> Intercept response</label>
+          <button id="ipToRepeater" class="btn ghost">→ Repeater</button>
+          <button id="ipForwardAll" class="btn ghost">Forward all</button>
+          <div class="spacer"></div>
+          <span class="ip-hint">Forwarded items move to HTTP history.</span>
+        </div>
+      </div>
+      <div id="ipEmpty" class="ip-empty show">
+        <div class="big" id="ipEmptyBig">Intercept is off</div>
+        <div id="ipEmptySub">Turn on <b>Intercept</b> in the sidebar to hold requests here before they’re sent.</div>
+      </div>
+    </section>
+
+    <!-- History view: every request/response -->
+    <section id="view-history" class="view">
+      <div class="toolbar">
+        <span class="title">HTTP history</span>
+        <input id="filter" type="text" placeholder="Filter by host, path, or method…" />
+        <label class="ip-resp" style="white-space:nowrap"><input type="checkbox" id="historyScopeOnly" /> In-scope only</label>
+        <span id="flowCount" class="count">0 requests</span>
+        <div class="spacer"></div>
+        <button id="saveSession" class="btn ghost" style="padding:6px 12px;font-size:13px">💾 Save</button>
+        <button id="loadSession" class="btn ghost" style="padding:6px 12px;font-size:13px">📂 Load</button>
+        <input id="loadSessionFile" type="file" accept=".json,application/json" style="display:none" />
+        <button id="exportHar" class="btn ghost" style="padding:6px 12px;font-size:13px">⬇ HAR</button>
+        <button id="clearFlows" class="btn ghost" style="padding:6px 12px;font-size:13px">Clear</button>
+      </div>
+      <div class="split">
+        <div class="flows">
+          <table>
+            <thead><tr>
+              <th style="width:78px">Method</th><th style="width:64px">Code</th>
+              <th>Host / Path</th><th style="width:88px;text-align:right">Size</th>
+            </tr></thead>
+            <tbody id="flowBody"></tbody>
+          </table>
+          <div id="emptyFlows" class="empty">
+            <div class="big">No traffic captured yet</div>
+            Point a device or browser at the proxy to see its requests here.
+          </div>
+        </div>
+        <aside id="detailPane" class="detail-pane">
+          <div class="dhead"><strong>Request detail</strong><button id="copyCurl" class="btn ghost" style="padding:4px 10px;font-size:12px">⧉ cURL</button><button id="toRepeater" class="btn ghost" style="padding:4px 10px;font-size:12px">→ Repeater</button><span class="close" id="closeDetail">×</span></div>
+          <div id="detailBody"></div>
+        </aside>
+      </div>
+    </section>
+
+    <!-- Repeater view -->
+    <section id="view-repeater" class="view">
+      <div class="rp-req">
+        <div class="rp-line">
+          <select id="rpMethod" style="width:auto">
+            <option>GET</option><option>POST</option><option>PUT</option><option>PATCH</option><option>DELETE</option><option>HEAD</option><option>OPTIONS</option>
+          </select>
+          <input id="rpUrl" type="text" placeholder="https://example.com/path" />
+          <button id="rpSend" class="btn-primary" style="width:auto;padding:10px 20px">Send ▶</button>
+        </div>
+        <div class="ip-grid">
+          <div class="ip-col">
+            <label class="ip-lbl">Request headers</label>
+            <textarea id="rpHeaders" class="ip-text" spellcheck="false" placeholder="Header: value (one per line)"></textarea>
+          </div>
+          <div class="ip-col">
+            <label class="ip-lbl">Request body</label>
+            <textarea id="rpBody" class="ip-text" spellcheck="false"></textarea>
+          </div>
+        </div>
+      </div>
+      <div class="rp-res">
+        <div class="rp-res-head"><span id="rpStatus" class="rp-status">Response</span><span id="rpMeta" class="ip-hint"></span></div>
+        <div class="ip-grid">
+          <div class="ip-col">
+            <label class="ip-lbl">Response headers</label>
+            <textarea id="rpResHeaders" class="ip-text" readonly spellcheck="false"></textarea>
+          </div>
+          <div class="ip-col">
+            <label class="ip-lbl">Response body</label>
+            <textarea id="rpResBody" class="ip-text" readonly spellcheck="false"></textarea>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Decoder view -->
+    <section id="view-decoder" class="view">
+      <div class="dec-wrap">
+        <label class="ip-lbl">Input</label>
+        <textarea id="decIn" class="ip-text" spellcheck="false" placeholder="Paste text, a token, base64, %-encoded, or hex…"></textarea>
+        <div class="dec-bar">
+          <span class="dec-group"><b>Base64</b><button class="btn ghost" data-dec="b64e">encode</button><button class="btn ghost" data-dec="b64d">decode</button></span>
+          <span class="dec-group"><b>URL</b><button class="btn ghost" data-dec="urle">encode</button><button class="btn ghost" data-dec="urld">decode</button></span>
+          <span class="dec-group"><b>Hex</b><button class="btn ghost" data-dec="hexe">encode</button><button class="btn ghost" data-dec="hexd">decode</button></span>
+          <span class="dec-group"><b>HTML</b><button class="btn ghost" data-dec="htmle">encode</button><button class="btn ghost" data-dec="htmld">decode</button></span>
+          <span class="dec-group"><button class="btn ghost" data-dec="jwt">JWT decode</button><button class="btn ghost" data-dec="json">JSON pretty</button><button class="btn" data-dec="smart">✨ Smart decode</button></span>
+        </div>
+        <div class="dec-outhead"><label class="ip-lbl" style="margin:0">Output <span id="decLabel" class="ip-note"></span></label><button id="decSwap" class="btn ghost" style="padding:4px 10px;font-size:12px">⇅ use as input</button><button id="decCopy" class="btn ghost" style="padding:4px 10px;font-size:12px">⧉ copy</button></div>
+        <textarea id="decOut" class="ip-text" spellcheck="false" readonly></textarea>
+      </div>
+    </section>
+  </main>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const flows = new Map();
+let filterText = '';
+let selectedId = null;
+
+async function api(path, opts) {
+  const res = await fetch('/api' + path, {
+    method: opts?.method || 'GET',
+    headers: { 'Content-Type': 'application/json' },
+    body: opts?.body ? JSON.stringify(opts.body) : undefined,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || res.statusText);
+  return data;
+}
+function banner(msg, ms = 4000) {
+  const b = $('banner'); b.textContent = msg; b.classList.add('show');
+  if (ms) setTimeout(() => b.classList.remove('show'), ms);
+}
+
+/* ---------- Devices ---------- */
+async function refreshDevices() {
+  try {
+    const devices = await api('/devices');
+    const sel = $('deviceSelect'); const prev = sel.value;
+    sel.innerHTML = '';
+    if (!devices.length) {
+      sel.innerHTML = '<option value="">No devices — enable USB debugging</option>';
+      $('deviceMeta').innerHTML = '';
+      return;
+    }
+    for (const d of devices) {
+      const o = document.createElement('option');
+      o.value = d.serial; o.textContent = `${d.model || d.serial}`;
+      o.dataset.meta = JSON.stringify(d); sel.appendChild(o);
+    }
+    sel.value = devices.some(d => d.serial === prev) ? prev : devices[0].serial;
+    showDeviceMeta();
+    updateConnectUI();
+    maybeAutoConnectGeny(devices);
+  } catch (e) { /* backend momentarily unavailable */ }
+}
+function showDeviceMeta() {
+  const opt = $('deviceSelect').selectedOptions[0];
+  const box = $('deviceMeta');
+  if (!opt?.dataset.meta) return (box.innerHTML = '');
+  const d = JSON.parse(opt.dataset.meta);
+  const pills = [];
+  if (connections.has(d.serial)) pills.push(`<span class="tag-pill good">● connected</span>`);
+  if (d.isGenymotion) pills.push(`<span class="tag-pill good">Genymotion</span>`);
+  else if (d.isEmulator) pills.push(`<span class="tag-pill">emulator</span>`);
+  if (d.androidVersion) pills.push(`<span class="tag-pill">Android ${d.androidVersion}</span>`);
+  if (d.abi) pills.push(`<span class="tag-pill">${d.abi}</span>`);
+  pills.push(`<span class="tag-pill ${d.rooted ? 'good' : ''}">${d.rooted ? 'rooted' : 'not rooted'}</span>`);
+  pills.push(`<span class="tag-pill ${d.fridaRunning ? 'good' : 'bad'}">frida ${d.fridaRunning ? 'running' : 'off'}</span>`);
+  box.innerHTML = pills.join('');
+}
+$('deviceSelect').addEventListener('change', () => { showDeviceMeta(); updateConnectUI(); });
+$('refreshDevices').addEventListener('click', refreshDevices);
+
+/* ---------- Connect / Frida / Disconnect ---------- */
+$('genyBtn').addEventListener('click', async () => {
+  const btn = $('genyBtn'); btn.disabled = true; btn.textContent = '… Finding Genymotion';
+  $('steps').innerHTML = '';
+  try {
+    const r = await api('/connect/genymotion', { method: 'POST' });
+    banner(`Capturing all traffic on ${r.device.model || r.device.serial} — CA via ${r.caInstall}.`);
+    refreshDevices();
+  } catch (e) { banner('Genymotion connect failed: ' + e.message, 7000); }
+  finally { btn.disabled = false; btn.textContent = '▶ Connect Genymotion — capture all traffic'; }
+});
+$('connectBtn').addEventListener('click', async () => {
+  const serial = $('deviceSelect').value;
+  if (!serial) return banner('Select a device first.');
+  const btn = $('connectBtn'); btn.disabled = true; btn.textContent = '… Setting up';
+  $('steps').innerHTML = '';
+  try {
+    const r = await api('/connect', { method: 'POST', body: {
+      serial, fridaTarget: $('fridaTarget').value.trim() || undefined } });
+    banner(`Connected — CA via ${r.caInstall}, host ${r.hostIp}:${r.proxyPort}`);
+  } catch (e) { banner('Connect failed: ' + e.message, 7000); }
+  finally { btn.disabled = false; btn.textContent = '⚡ Connect selected device'; }
+});
+$('fridaBtn').addEventListener('click', async () => {
+  const serial = $('deviceSelect').value;
+  if (!serial) return banner('Select a device first.');
+  const btn = $('fridaBtn'); btn.disabled = true; btn.textContent = '… Downloading';
+  try {
+    const r = await api('/frida/provision', { method: 'POST', body: { serial } });
+    banner(`frida-server ${r.version} (${r.arch}) pushed & started.`);
+    refreshDevices();
+  } catch (e) { banner('Frida setup failed: ' + e.message, 7000); }
+  finally { btn.disabled = false; btn.textContent = 'Set up Frida'; }
+});
+$('disconnectBtn').addEventListener('click', async () => {
+  const serial = $('deviceSelect').value;
+  if (serial) { await api('/disconnect', { method: 'POST', body: { serial } }).catch(() => {}); banner('Disconnected device routing.'); }
+});
+
+/* ---------- Burp ---------- */
+$('applyBurp').addEventListener('click', async () => {
+  try {
+    await api('/upstream', { method: 'POST', body: {
+      enabled: $('burpEnabled').checked, host: $('burpHost').value.trim(),
+      port: Number($('burpPort').value) || 8080 } });
+    banner($('burpEnabled').checked ? 'Now chaining through Burp.' : 'Burp chaining off.');
+  } catch (e) { banner('Failed: ' + e.message); }
+});
+
+/* ---------- Setup steps ---------- */
+const ICON = { ok: '✓', warn: '!', error: '✕', running: '◐', pending: '·' };
+function renderStep(step) {
+  let li = document.querySelector(`[data-step="${step.key}"]`);
+  if (!li) {
+    li = document.createElement('li'); li.dataset.step = step.key;
+    li.innerHTML = `<span class="ic"></span><div class="body"><div class="lbl"></div></div>`;
+    $('steps').appendChild(li);
+  }
+  const ic = li.querySelector('.ic'); ic.className = 'ic ' + step.status; ic.textContent = ICON[step.status] || '·';
+  li.querySelector('.body').innerHTML =
+    `<div class="lbl">${step.label}</div>${step.detail ? `<div class="detail">${step.detail}</div>` : ''}`;
+}
+
+/* ---------- Flows ---------- */
+function matches(f) {
+  if ($('historyScopeOnly')?.checked && !hostInScope(f.host)) return false;
+  if (!filterText) return true;
+  return `${f.method} ${f.url} ${f.host}`.toLowerCase().includes(filterText);
+}
+function sCls(code) { return code ? 's' + String(code)[0] : ''; }
+function fmtSize(n) { if (n == null) return ''; if (n < 1024) return n + ' B'; if (n < 1048576) return (n/1024).toFixed(1) + ' KB'; return (n/1048576).toFixed(1) + ' MB'; }
+function renderFlows() {
+  const list = [...flows.values()].filter(matches);
+  $('flowCount').textContent = `${flows.size} request${flows.size === 1 ? '' : 's'}`;
+  $('tabHistoryCount').textContent = flows.size;
+  $('emptyFlows').style.display = flows.size ? 'none' : 'block';
+  $('flowBody').innerHTML = list.slice(-600).map(f => `
+    <tr data-id="${f.id}" class="${f.id === selectedId ? 'sel' : ''}">
+      <td class="method m-${f.method}">${f.method}</td>
+      <td class="status ${sCls(f.statusCode)}">${f.statusCode || '·'}</td>
+      <td class="url"><span class="host">${f.host || ''}</span><span class="path">${f.path || ''}</span></td>
+      <td class="size">${fmtSize(f.responseBodySize)}</td>
+    </tr>`).join('');
+}
+$('flowBody').addEventListener('click', (e) => {
+  const tr = e.target.closest('tr'); if (!tr) return;
+  selectedId = tr.dataset.id; renderFlows(); showDetail(flows.get(selectedId));
+});
+$('filter').addEventListener('input', (e) => { filterText = e.target.value.toLowerCase(); renderFlows(); });
+$('clearFlows').addEventListener('click', () => {
+  flows.clear(); selectedId = null; closeDetail(); renderFlows();
+  api('/flows/clear', { method: 'POST' }).catch(() => {});
+});
+
+/* ---------- Detail pane ---------- */
+function headersKV(h) {
+  if (!h) return '<div class="placeholder">none</div>';
+  return '<div class="kv">' + Object.entries(h).map(([k, v]) =>
+    `<div class="k">${k}</div><div class="v">${Array.isArray(v) ? v.join(', ') : v}</div>`).join('') + '</div>';
+}
+function bodyBlock(title, text, size) {
+  if (!text) return `<div class="section"><h3>${title}</h3><div class="placeholder">${size ? fmtSize(size) + ' (not captured)' : 'none'}</div></div>`;
+  return `<div class="section"><h3>${title} <span style="color:var(--faint)">${fmtSize(size) || ''}</span></h3><pre style="margin:0;white-space:pre-wrap;word-break:break-all;font-family:var(--mono);font-size:12px;color:var(--text)">${esc(text)}</pre></div>`;
+}
+function showDetail(f) {
+  if (!f) return;
+  $('detailBody').innerHTML = `
+    <div class="section"><h3>${f.method} ${f.statusCode ? '· ' + f.statusCode : ''}</h3><div class="url-full">${esc(f.url)}</div></div>
+    <div class="section"><h3>Request headers</h3>${headersKV(f.requestHeaders)}</div>
+    ${bodyBlock('Request body', f.requestBody, f.requestBodySize)}
+    <div class="section"><h3>Response headers</h3>${headersKV(f.responseHeaders)}</div>
+    ${bodyBlock('Response body', f.responseBody, f.responseBodySize)}`;
+  $('detailPane').classList.add('open');
+}
+
+/* ================= Export: cURL + HAR ================= */
+function shQ(s) { return "'" + String(s).replace(/'/g, "'\\''") + "'"; }
+function toCurl(f) {
+  let c = `curl -X ${f.method} ${shQ(f.url)}`;
+  for (const [k, v] of Object.entries(f.requestHeaders || {})) {
+    if (/^(content-length|host)$/i.test(k)) continue;
+    (Array.isArray(v) ? v : [v]).forEach(val => { if (val !== undefined) c += ` \\\n  -H ${shQ(k + ': ' + val)}`; });
+  }
+  if (f.requestBody) c += ` \\\n  --data-raw ${shQ(f.requestBody)}`;
+  return c;
+}
+function download(name, text, type) {
+  const b = new Blob([text], { type }); const u = URL.createObjectURL(b);
+  const a = document.createElement('a'); a.href = u; a.download = name; a.click();
+  setTimeout(() => URL.revokeObjectURL(u), 1000);
+}
+function harHeaders(h) {
+  const out = [];
+  for (const [k, v] of Object.entries(h || {})) (Array.isArray(v) ? v : [v]).forEach(val => { if (val !== undefined) out.push({ name: k, value: String(val) }); });
+  return out;
+}
+function mimeOf(h) { const ct = (h || {})['content-type']; return (Array.isArray(ct) ? ct[0] : ct) || ''; }
+function toHar(list) {
+  return JSON.stringify({ log: {
+    version: '1.2', creator: { name: 'hizn', version: '0.1.0' },
+    entries: list.map(f => ({
+      startedDateTime: new Date(f.startedAt || Date.now()).toISOString(),
+      time: (f.completedAt && f.startedAt) ? f.completedAt - f.startedAt : 0,
+      request: { method: f.method, url: f.url, httpVersion: 'HTTP/1.1', cookies: [], queryString: [],
+        headers: harHeaders(f.requestHeaders), headersSize: -1, bodySize: f.requestBodySize ?? -1,
+        postData: f.requestBody ? { mimeType: mimeOf(f.requestHeaders), text: f.requestBody } : undefined },
+      response: { status: f.statusCode ?? 0, statusText: f.statusMessage || '', httpVersion: 'HTTP/1.1', cookies: [],
+        headers: harHeaders(f.responseHeaders), headersSize: -1, bodySize: f.responseBodySize ?? -1, redirectURL: '',
+        content: { size: f.responseBodySize ?? 0, mimeType: mimeOf(f.responseHeaders), text: f.responseBody || '' } },
+      cache: {}, timings: { send: 0, wait: (f.completedAt && f.startedAt) ? f.completedAt - f.startedAt : 0, receive: 0 },
+    })),
+  }}, null, 2);
+}
+$('copyCurl').addEventListener('click', async () => {
+  const f = flows.get(selectedId); if (!f) return;
+  try { await navigator.clipboard.writeText(toCurl(f)); banner('cURL copied to clipboard.'); }
+  catch { banner('Copy failed.'); }
+});
+$('exportHar').addEventListener('click', () => {
+  const list = [...flows.values()].filter(matches);
+  if (!list.length) return banner('No requests to export.');
+  download(`hizn-${Date.now()}.har`, toHar(list), 'application/json');
+  banner(`Exported ${list.length} request(s) to .har`);
+});
+
+/* ---- Save / Load session (full capture, reloadable) ---- */
+$('saveSession').addEventListener('click', () => {
+  const list = [...flows.values()];
+  if (!list.length) return banner('Nothing to save.');
+  download(`hizn-session-${Date.now()}.json`, JSON.stringify({ hizn: 'session', version: 1, flows: list }, null, 2), 'application/json');
+  banner(`Saved session (${list.length} requests).`);
+});
+$('loadSession').addEventListener('click', () => $('loadSessionFile').click());
+$('loadSessionFile').addEventListener('change', async (e) => {
+  const file = e.target.files?.[0]; if (!file) return;
+  try {
+    const parsed = JSON.parse(await file.text());
+    const list = Array.isArray(parsed) ? parsed : (parsed.flows || []);
+    if (!Array.isArray(list)) throw new Error('No flows[] in file');
+    await api('/flows/import', { method: 'POST', body: { flows: list } });
+    banner(`Loaded session (${list.length} requests).`);
+    switchView('history');
+  } catch (err) { banner('Load failed: ' + err.message, 6000); }
+  finally { e.target.value = ''; }
+});
+function closeDetail() { $('detailPane').classList.remove('open'); selectedId = null; renderFlows(); }
+$('closeDetail').addEventListener('click', closeDetail);
+
+/* ================= Repeater ================= */
+function sendToRepeater(f) {
+  if (!f) return;
+  $('rpMethod').value = f.method || 'GET';
+  $('rpUrl').value = f.url || '';
+  $('rpHeaders').value = headersToText(f.requestHeaders);
+  $('rpBody').value = f.body || '';
+  $('rpStatus').textContent = 'Response'; $('rpMeta').textContent = '';
+  $('rpResHeaders').value = ''; $('rpResBody').value = '';
+  switchView('repeater');
+}
+$('toRepeater').addEventListener('click', () => sendToRepeater(flows.get(selectedId)));
+$('rpSend').addEventListener('click', async () => {
+  const btn = $('rpSend'); btn.disabled = true; btn.textContent = '… Sending';
+  $('rpStatus').textContent = 'Sending…'; $('rpMeta').textContent = '';
+  try {
+    const r = await api('/repeater/send', { method: 'POST', body: {
+      method: $('rpMethod').value,
+      url: $('rpUrl').value.trim(),
+      headers: textToHeaders($('rpHeaders').value),
+      body: $('rpBody').value || undefined,
+    }});
+    if (r.error) {
+      $('rpStatus').textContent = 'Error'; $('rpStatus').style.color = 'var(--red)';
+      $('rpMeta').textContent = r.error; $('rpResHeaders').value = ''; $('rpResBody').value = '';
+    } else {
+      $('rpStatus').textContent = `${r.statusCode} ${r.statusMessage || ''}`.trim();
+      $('rpStatus').style.color = r.statusCode >= 500 ? 'var(--red)' : r.statusCode >= 400 ? 'var(--amber)' : 'var(--accent)';
+      $('rpMeta').textContent = `${r.durationMs} ms · ${fmtSize(r.bodySize) || '0 B'}`;
+      $('rpResHeaders').value = headersToText(r.headers);
+      $('rpResBody').value = r.body || '';
+    }
+  } catch (e) { $('rpStatus').textContent = 'Error'; $('rpMeta').textContent = e.message; }
+  finally { btn.disabled = false; btn.textContent = 'Send ▶'; }
+});
+
+/* ---------- Status ---------- */
+function applyStatus(s) {
+  const pc = $('proxyChip'); pc.classList.toggle('live', s.running);
+  $('proxyChipText').textContent = s.running ? `Proxy on :${s.port}` : 'Proxy stopped';
+  applyUpstream(s.upstream);
+  if (s.intercept) applyInterceptConfig(s.intercept);
+  // Proxy setup card
+  const addr = `127.0.0.1:${s.port}`;
+  $('proxyAddr').textContent = addr;
+  if ($('proxyAddr2')) $('proxyAddr2').textContent = addr;
+  $('setupProxyState').textContent = s.running ? 'listening' : 'stopped';
+  $('setupProxyState').style.color = s.running ? 'var(--accent)' : 'var(--faint)';
+  $('startProxyBtn').textContent = s.running ? '■ Stop proxy' : '▶ Start proxy';
+  $('startProxyBtn').dataset.running = s.running ? '1' : '';
+}
+function applyUpstream(up) {
+  if (!up) return;
+  const bc = $('burpChip');
+  bc.classList.toggle('live', !!up.enabled);
+  $('burpChipText').textContent = up.enabled ? `Burp ${up.host}:${up.port}` : 'Burp off';
+  if (up.enabled !== undefined) $('burpEnabled').checked = up.enabled;
+  if (up.host) $('burpHost').value = up.host;
+  if (up.port) $('burpPort').value = up.port;
+}
+
+/* ================= Theme ================= */
+function applyTheme(mode) {
+  document.documentElement.setAttribute('data-theme', mode);
+  $('themeToggle').textContent = mode === 'light' ? '☀️' : '🌙';
+  try { localStorage.setItem('dm-theme', mode); } catch {}
+}
+$('themeToggle').addEventListener('click', () => {
+  const cur = document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
+  applyTheme(cur === 'light' ? 'dark' : 'light');
+});
+(function initTheme() {
+  let saved; try { saved = localStorage.getItem('dm-theme'); } catch {}
+  if (!saved) saved = matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+  applyTheme(saved);
+})();
+
+/* ================= Header helpers ================= */
+function headersToText(h) {
+  if (!h) return '';
+  const lines = [];
+  for (const [k, v] of Object.entries(h)) {
+    (Array.isArray(v) ? v : [v]).forEach(val => { if (val !== undefined) lines.push(`${k}: ${val}`); });
+  }
+  return lines.join('\n');
+}
+function textToHeaders(t) {
+  const h = {};
+  for (const line of t.split('\n')) {
+    const i = line.indexOf(':'); if (i < 0) continue;
+    const k = line.slice(0, i).trim(); const v = line.slice(i + 1).trim();
+    if (!k) continue;
+    if (h[k] === undefined) h[k] = v;
+    else h[k] = [].concat(h[k], v);
+  }
+  return h;
+}
+
+/* ================= Intercept ================= */
+const intercept = { config: { enabled: false, requests: true, responses: false }, queue: [] };
+
+function setInterceptChip() {
+  const c = $('interceptChip'); const on = intercept.config.enabled;
+  c.classList.toggle('live', on);
+  $('interceptChipText').textContent = on
+    ? (intercept.queue.length ? `Intercept — ${intercept.queue.length} held` : 'Intercept on')
+    : 'Intercept off';
+}
+function applyInterceptConfig(cfg) {
+  intercept.config = cfg;
+  $('interceptEnabled').checked = cfg.enabled;
+  $('interceptRequests').checked = cfg.requests;
+  $('interceptResponses').checked = cfg.responses;
+  setInterceptChip();
+  if (!cfg.enabled) { intercept.queue = []; renderIntercept(); }
+}
+async function pushInterceptConfig() {
+  const cfg = await api('/intercept/config', { method: 'POST', body: {
+    enabled: $('interceptEnabled').checked,
+    requests: $('interceptRequests').checked,
+    responses: $('interceptResponses').checked,
+  }});
+  applyInterceptConfig(cfg);
+}
+$('interceptEnabled').addEventListener('change', pushInterceptConfig);
+$('interceptRequests').addEventListener('change', pushInterceptConfig);
+$('interceptResponses').addEventListener('change', pushInterceptConfig);
+$('interceptChip').addEventListener('click', () => { $('interceptEnabled').checked = !intercept.config.enabled; pushInterceptConfig(); });
+
+/* ---- tab switching ---- */
+function switchView(name) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.view === name));
+  document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.id === 'view-' + name));
+}
+document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => switchView(t.dataset.view)));
+
+/* ---- sidebar section tabs (rail) ---- */
+function switchSection(name) {
+  document.querySelectorAll('.rail-btn').forEach(b => b.classList.toggle('active', b.dataset.sec === name));
+  document.querySelectorAll('.sect').forEach(s => s.classList.toggle('active', s.id === 'sec-' + name));
+  try { localStorage.setItem('dm-sec', name); } catch {}
+}
+document.querySelectorAll('.rail-btn').forEach(b => b.addEventListener('click', () => {
+  const sb = document.querySelector('.sidebar');
+  if (b.classList.contains('active')) {
+    sb.classList.toggle('collapsed');
+    try { localStorage.setItem('dm-sec-collapsed', sb.classList.contains('collapsed') ? '1' : '0'); } catch {}
+  } else {
+    sb.classList.remove('collapsed');
+    try { localStorage.setItem('dm-sec-collapsed', '0'); } catch {}
+    switchSection(b.dataset.sec);
+  }
+}));
+(function initSidebar() {
+  let saved, col;
+  try { saved = localStorage.getItem('dm-sec'); col = localStorage.getItem('dm-sec-collapsed'); } catch {}
+  if (saved && document.getElementById('sec-' + saved)) switchSection(saved);
+  if (col === '1') document.querySelector('.sidebar').classList.add('collapsed');
+})();
+
+function renderIntercept() {
+  setInterceptChip();
+  // Tab badge = number of held items.
+  const badge = $('tabInterceptBadge');
+  badge.textContent = intercept.queue.length;
+  badge.classList.toggle('show', intercept.queue.length > 0);
+
+  const panel = $('interceptPanel');
+  const empty = $('ipEmpty');
+  const item = intercept.queue[0];
+  if (!item) {
+    panel.classList.remove('open');
+    empty.classList.add('show');
+    if (intercept.config.enabled) {
+      $('ipEmptyBig').textContent = 'Intercept is on — waiting…';
+      $('ipEmptySub').innerHTML = 'The next request/response will pause here. All traffic is logged under <b>HTTP history</b>.';
+    } else {
+      $('ipEmptyBig').textContent = 'Intercept is off';
+      $('ipEmptySub').innerHTML = 'Turn on <b>Intercept</b> in the sidebar’s Intercept tab to hold requests here before they’re sent.';
+    }
+    return;
+  }
+  empty.classList.remove('show');
+  panel.classList.add('open');
+  $('ipKind').textContent = item.kind === 'request' ? '⏸ Request held' : '⏸ Response held';
+  $('ipQueue').textContent = intercept.queue.length > 1 ? `${intercept.queue.length} queued` : 'editing';
+  $('ipLine').textContent = item.kind === 'request'
+    ? `${item.method} ${item.url}`
+    : `${item.statusCode || ''} ${item.statusMessage || ''}  ·  ${item.url || ''}`;
+  // Single raw HTTP message (start line + headers + blank line + body), like Burp.
+  const raw = buildRaw(item);
+  $('ipRaw').value = raw;
+  item._origRaw = raw;
+  $('ipBodyNote').textContent = item.bodyTruncated ? '(body truncated for display — forward keeps original unless edited)' : '';
+  // "Intercept response" only applies to a held request.
+  $('ipRespWrap').style.display = item.kind === 'request' ? 'flex' : 'none';
+  $('ipToRepeater').style.display = item.kind === 'request' ? 'inline-flex' : 'none';
+  $('ipInterceptResp').checked = false;
+  renderPluginTabs(item);
+}
+
+/* ---- raw HTTP message build / parse ---- */
+function buildRaw(item) {
+  const start = item.kind === 'request'
+    ? `${item.method} ${item.url} HTTP/1.1`
+    : `HTTP/1.1 ${item.statusCode || ''} ${item.statusMessage || ''}`.trim();
+  const h = headersToText(item.headers);
+  return start + '\n' + h + '\n\n' + (item.body || '');
+}
+function parseRaw(raw) {
+  const m = raw.match(/\r?\n\r?\n/);
+  let head, body;
+  if (m) { head = raw.slice(0, m.index); body = raw.slice(m.index + m[0].length); }
+  else { head = raw; body = ''; }
+  const lines = head.split(/\r?\n/);
+  const startLine = lines.shift() || '';
+  return { startLine, headers: textToHeaders(lines.join('\n')), body };
+}
+
+async function resolveCurrent(action) {
+  const item = intercept.queue[0]; if (!item) return;
+  const body = { id: item.id, action };
+  if (action === 'forward') {
+    const raw = $('ipRaw').value;
+    if (raw !== item._origRaw) {
+      const p = parseRaw(raw);
+      body.headers = p.headers;
+      body.bodyEdited = true; body.body = p.body;
+      const t = p.startLine.split(/\s+/);
+      if (item.kind === 'request') { body.method = t[0]; body.url = t[1]; }
+      else { body.statusCode = Number(t[1]) || undefined; body.statusMessage = t.slice(2).join(' ') || undefined; }
+    }
+    if (item.kind === 'request') body.interceptResponse = $('ipInterceptResp').checked;
+  }
+  intercept.queue.shift();
+  renderIntercept();
+  await api('/intercept/resolve', { method: 'POST', body }).catch(e => banner('Resolve failed: ' + e.message));
+}
+$('ipForward').addEventListener('click', () => resolveCurrent('forward'));
+$('ipDrop').addEventListener('click', () => resolveCurrent('drop'));
+$('ipToRepeater').addEventListener('click', () => {
+  const item = intercept.queue[0]; if (!item || item.kind !== 'request') return;
+  const p = parseRaw($('ipRaw').value);
+  const t = p.startLine.split(/\s+/);
+  sendToRepeater({ method: t[0], url: t[1], requestHeaders: p.headers, body: p.body });
+  banner('Copied to Repeater — the held request stays here.');
+});
+$('ipForwardAll').addEventListener('click', async () => {
+  const items = [...intercept.queue]; intercept.queue = []; renderIntercept();
+  for (const it of items) {
+    await api('/intercept/resolve', { method: 'POST', body: { id: it.id, action: 'forward' } }).catch(() => {});
+  }
+});
+
+/* ================= Plugins (Burp-extension style) ================= */
+const BUILTIN_PLUGINS = [{
+  id: 'jwt', name: 'JWT Decoder', desc: 'Finds & decodes JWTs in headers/body', builtin: true, enabled: true,
+  // transform returns HTML
+  code: `
+    const out = [];
+    const scan = (ctx.body || '') + '\\n' + Object.values(ctx.headers||{}).join('\\n');
+    const re = /eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]*/g;
+    const seen = new Set();
+    let m;
+    const b64 = (s) => { try { return decodeURIComponent(escape(atob(s.replace(/-/g,'+').replace(/_/g,'/')))); } catch { return '(undecodable)'; } };
+    const pretty = (s) => { try { return JSON.stringify(JSON.parse(s), null, 2); } catch { return s; } };
+    while ((m = re.exec(scan))) {
+      const tok = m[0]; if (seen.has(tok)) continue; seen.add(tok);
+      const [h,p,sig] = tok.split('.');
+      out.push('<div class="jwt-seg"><div class="h">Header</div><pre class="jwt-head">'+pretty(b64(h))+'</pre>'
+        +'<div class="h">Payload</div><pre class="jwt-payload">'+pretty(b64(p))+'</pre>'
+        +'<div class="h">Signature</div><pre class="jwt-sig">'+(sig||'(none)')+'</pre></div>');
+    }
+    return out.length ? out.join('') : '<pre>No JWT found in this message.</pre>';
+  `,
+}];
+
+function loadPlugins() {
+  let custom = [];
+  try { custom = JSON.parse(localStorage.getItem('dm-plugins') || '[]'); } catch {}
+  let enabledMap = {};
+  try { enabledMap = JSON.parse(localStorage.getItem('dm-plugins-enabled') || '{}'); } catch {}
+  const builtins = BUILTIN_PLUGINS.map(p => ({ ...p, enabled: enabledMap[p.id] !== undefined ? enabledMap[p.id] : p.enabled }));
+  const customs = custom.map(p => ({ ...p, builtin: false, enabled: enabledMap[p.id] !== undefined ? enabledMap[p.id] : true }));
+  return [...builtins, ...customs];
+}
+function savePlugins(plugins) {
+  const custom = plugins.filter(p => !p.builtin).map(({ id, name, desc, code }) => ({ id, name, desc, code }));
+  const enabledMap = {}; plugins.forEach(p => enabledMap[p.id] = p.enabled);
+  try { localStorage.setItem('dm-plugins', JSON.stringify(custom)); } catch {}
+  try { localStorage.setItem('dm-plugins-enabled', JSON.stringify(enabledMap)); } catch {}
+}
+let plugins = loadPlugins();
+
+function renderPluginList() {
+  $('pluginList').innerHTML = plugins.map(p => `
+    <div class="plugin-row">
+      <input type="checkbox" data-pid="${p.id}" ${p.enabled ? 'checked' : ''} />
+      <div style="flex:1;min-width:0">
+        <div class="pname">${p.name} ${p.builtin ? '' : '<span class="pdesc">· custom</span>'}</div>
+        <div class="pdesc">${p.desc || ''}</div>
+      </div>
+      ${p.builtin ? '' : `<span class="close" data-del="${p.id}" style="cursor:pointer;color:var(--muted)">×</span>`}
+    </div>`).join('');
+  $('pluginList').querySelectorAll('input[data-pid]').forEach(cb =>
+    cb.addEventListener('change', () => { const p = plugins.find(x => x.id === cb.dataset.pid); if (p) p.enabled = cb.checked; savePlugins(plugins); if (intercept.queue[0]) renderPluginTabs(intercept.queue[0]); }));
+  $('pluginList').querySelectorAll('[data-del]').forEach(x =>
+    x.addEventListener('click', () => { plugins = plugins.filter(p => p.id !== x.dataset.del); savePlugins(plugins); renderPluginList(); }));
+}
+$('addPlugin').addEventListener('click', () => {
+  const name = prompt('Plugin name:'); if (!name) return;
+  const desc = prompt('Short description:') || '';
+  const code = prompt('JS body — receives ctx {kind,method,url,statusCode,headers,body}, return a string (HTML allowed):',
+    'return "URL: " + ctx.url;');
+  if (code == null) return;
+  plugins.push({ id: 'c' + Date.now(), name, desc, code, builtin: false, enabled: true });
+  savePlugins(plugins); renderPluginList();
+});
+
+let activePluginId = null;
+function renderPluginTabs(item) {
+  const on = plugins.filter(p => p.enabled);
+  $('pluginTabs').innerHTML = on.map(p => `<span class="plugin-tab ${p.id === activePluginId ? 'active' : ''}" data-tab="${p.id}">${p.name}</span>`).join('');
+  $('pluginTabs').querySelectorAll('[data-tab]').forEach(t =>
+    t.addEventListener('click', () => { activePluginId = activePluginId === t.dataset.tab ? null : t.dataset.tab; runPlugin(item); renderPluginTabs(item); }));
+  if (activePluginId && on.some(p => p.id === activePluginId)) runPlugin(item);
+  else { activePluginId = null; $('pluginOut').classList.remove('open'); }
+}
+function runPlugin(item) {
+  const p = plugins.find(x => x.id === activePluginId); const out = $('pluginOut');
+  if (!p) { out.classList.remove('open'); return; }
+  const parsed = parseRaw($('ipRaw').value);
+  const ctx = {
+    kind: item.kind, method: item.method, url: item.url, statusCode: item.statusCode,
+    headers: item.headers || {}, body: parsed.body, raw: $('ipRaw').value,
+  };
+  let html;
+  try { html = new Function('ctx', p.code)(ctx); }
+  catch (e) { html = '<pre style="color:var(--red)">Plugin error: ' + (e && e.message) + '</pre>'; }
+  out.innerHTML = (typeof html === 'string' && /</.test(html)) ? html : '<pre>' + String(html ?? '') + '</pre>';
+  out.classList.add('open');
+}
+
+/* ================= Auto-connect Genymotion ================= */
+let autoConnectTried = false;
+async function maybeAutoConnectGeny(devices) {
+  if (autoConnectTried) return;
+  const geny = devices.find(d => d.isGenymotion) || devices.find(d => d.isEmulator);
+  if (!geny) return;
+  autoConnectTried = true;
+  banner(`Genymotion detected (${geny.model || geny.serial}) — auto-connecting…`);
+  $('genyBtn').click();
+}
+
+/* ================= Match & Replace ================= */
+const esc = (s) => String(s ?? '').replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+const PART_LABEL = {
+  'request-header': 'Req header', 'request-body': 'Req body', 'request-url': 'Req URL',
+  'response-header': 'Res header', 'response-body': 'Res body',
+};
+let rules = []; try { rules = JSON.parse(localStorage.getItem('dm-rules') || '[]'); } catch {}
+async function pushRules() { try { await api('/rules', { method: 'POST', body: { rules } }); } catch {} }
+function saveRules() { try { localStorage.setItem('dm-rules', JSON.stringify(rules)); } catch {} pushRules(); }
+function renderRuleList() {
+  $('ruleList').innerHTML = rules.length ? rules.map((r, i) => `
+    <div class="plugin-row">
+      <input type="checkbox" data-ri="${i}" ${r.enabled ? 'checked' : ''} />
+      <div style="flex:1;min-width:0">
+        <div class="pname">${PART_LABEL[r.part] || r.part}</div>
+        <div class="pdesc" style="word-break:break-all">${esc(r.match)} → ${esc(r.replace) || '<i>(remove)</i>'}</div>
+      </div>
+      <span class="close" data-rd="${i}" style="cursor:pointer;color:var(--muted)">×</span>
+    </div>`).join('') : '<div class="placeholder">No rules yet.</div>';
+  $('ruleList').querySelectorAll('input[data-ri]').forEach(cb =>
+    cb.addEventListener('change', () => { rules[+cb.dataset.ri].enabled = cb.checked; saveRules(); }));
+  $('ruleList').querySelectorAll('[data-rd]').forEach(x =>
+    x.addEventListener('click', () => { rules.splice(+x.dataset.rd, 1); saveRules(); renderRuleList(); }));
+}
+$('addRule').addEventListener('click', () => {
+  const match = $('ruleMatch').value.trim();
+  if (!match) return banner('Enter a match pattern.');
+  rules.push({ id: 'r' + Date.now(), enabled: true, part: $('rulePart').value, match, replace: $('ruleReplace').value, regex: true });
+  saveRules(); renderRuleList();
+  $('ruleMatch').value = ''; $('ruleReplace').value = '';
+  banner('Rule added — applied to all traffic now.');
+});
+
+/* ================= Target scope ================= */
+const scope = { enabled: false, hosts: [] };
+function hostInScope(host) {
+  if (!scope.hosts.length) return true;
+  const h = (host || '').toLowerCase(), noPort = h.replace(/:\d+$/, '');
+  return scope.hosts.some(p => {
+    p = p.toLowerCase();
+    if (p.includes('*')) { const re = new RegExp('^' + p.replace(/\./g, '\\.').replace(/\*/g, '.*') + '$'); return re.test(h) || re.test(noPort); }
+    return h.includes(p) || noPort.includes(p);
+  });
+}
+function applyScope(s) {
+  scope.enabled = !!s.enabled; scope.hosts = s.hosts || [];
+  $('scopeEnabled').checked = scope.enabled;
+  $('scopeHosts').value = scope.hosts.join('\n');
+  renderFlows();
+}
+$('applyScope').addEventListener('click', async () => {
+  const hosts = $('scopeHosts').value.split('\n').map(x => x.trim()).filter(Boolean);
+  const s = await api('/scope', { method: 'POST', body: { enabled: $('scopeEnabled').checked, hosts } });
+  applyScope(s);
+  banner(s.enabled ? `Scope on — ${s.hosts.length || 'all'} host(s).` : 'Scope off.');
+});
+$('scopeEnabled').addEventListener('change', () => $('applyScope').click());
+$('historyScopeOnly').addEventListener('change', renderFlows);
+
+/* ================= Connected devices ================= */
+const connections = new Set();
+function applyConnections(list) {
+  connections.clear(); (list || []).forEach(s => connections.add(s));
+  showDeviceMeta(); updateConnectUI();
+}
+function updateConnectUI() {
+  const serial = $('deviceSelect').value;
+  const on = connections.has(serial) && !!serial;
+  $('deviceConnState').textContent = on ? '● connected' : '';
+  $('deviceConnState').style.color = 'var(--accent)';
+  $('deviceDisconnect').style.display = on ? 'block' : 'none';
+}
+$('deviceDisconnect').addEventListener('click', async () => {
+  const serial = $('deviceSelect').value; if (!serial) return;
+  await api('/disconnect', { method: 'POST', body: { serial } }).catch(() => {});
+  banner('Device disconnected — proxy routing removed.');
+});
+
+/* ---------- WebSocket ---------- */
+function connectWs() {
+  const ws = new WebSocket(`ws://${location.host}/ws`);
+  ws.onmessage = (ev) => {
+    const m = JSON.parse(ev.data);
+    if (m.type === 'flow') { flows.set(m.flow.id, m.flow); renderFlows(); }
+    else if (m.type === 'flow-snapshot') { flows.clear(); for (const f of m.flows || []) flows.set(f.id, f); renderFlows(); }
+    else if (m.type === 'flows-cleared') { flows.clear(); selectedId = null; closeDetail(); renderFlows(); }
+    else if (m.type === 'flow-update') { const f = flows.get(m.update.id); if (f) { Object.assign(f, m.update); renderFlows(); if (f.id === selectedId) showDetail(f); } }
+    else if (m.type === 'proxy-status') applyStatus(m.status);
+    else if (m.type === 'upstream') applyUpstream(m.upstream);
+    else if (m.type === 'setup-step') renderStep(m.step);
+    else if (m.type === 'intercept') { intercept.queue.push(m.item); renderIntercept(); switchView('intercept'); }
+    else if (m.type === 'intercept-closed') { intercept.queue = intercept.queue.filter(i => i.id !== m.ref.id); renderIntercept(); }
+    else if (m.type === 'intercept-config') applyInterceptConfig(m.config);
+    else if (m.type === 'connections') applyConnections(m.connected);
+    else if (m.type === 'scope') applyScope(m.scope);
+  };
+  ws.onclose = () => setTimeout(connectWs, 1500);
+}
+
+/* ================= Proxy setup (Burp-style) ================= */
+$('startProxyBtn').addEventListener('click', async () => {
+  const b = $('startProxyBtn'); const running = b.dataset.running === '1';
+  b.disabled = true;
+  try {
+    await api(running ? '/proxy/stop' : '/proxy/start', { method: 'POST' });
+    const s = await api('/status'); applyStatus(s);
+    banner(running ? 'Proxy stopped.' : `Proxy listening on ${$('proxyAddr').textContent}. Point your browser/device here.`);
+  } catch (e) { banner('Failed: ' + e.message); }
+  finally { b.disabled = false; }
+});
+$('copyProxy').addEventListener('click', async () => {
+  try { await navigator.clipboard.writeText($('proxyAddr').textContent); banner('Proxy address copied.'); }
+  catch { banner('Copy failed — select it manually.'); }
+});
+
+/* ================= Desktop / Firefox (optional) ================= */
+async function loadDesktopInfo() {
+  try {
+    const d = await api('/desktop/info');
+    $('ffProxyAddr').value = `127.0.0.1:${d.proxyPort}`;
+    $('ffCaPath').textContent = d.caPath;
+    $('ffFound').textContent = d.firefoxFound ? 'installed' : 'not installed';
+    $('ffFound').style.color = d.firefoxFound ? 'var(--accent)' : 'var(--amber)';
+  } catch {}
+}
+$('launchFirefox').addEventListener('click', async (e) => {
+  e.preventDefault();
+  try {
+    const r = await api('/desktop/firefox', { method: 'POST' });
+    $('ffCaPath').textContent = r.caPath;
+    if (r.caTrusted === 'certutil') {
+      $('ffCaSteps').style.display = 'none';
+      banner('✅ Firefox launched & CA auto-trusted in its profile — just browse.');
+    } else {
+      $('ffCaSteps').style.display = 'block';
+      banner('Firefox launched. One-time: import the CA (opened on the Certificates page).');
+    }
+  } catch (err) { banner('Firefox launch failed: ' + err.message, 7000); }
+});
+
+/* ================= Decoder ================= */
+function b64enc(s) { return btoa(unescape(encodeURIComponent(s))); }
+function b64dec(s) { return decodeURIComponent(escape(atob(s.trim().replace(/-/g, '+').replace(/_/g, '/')))); }
+function hexEnc(s) { return Array.from(new TextEncoder().encode(s)).map(b => b.toString(16).padStart(2, '0')).join(''); }
+function hexDec(h) { const m = (h.replace(/[^0-9a-fA-F]/g, '').match(/.{1,2}/g)) || []; return new TextDecoder().decode(new Uint8Array(m.map(x => parseInt(x, 16)))); }
+function htmlEnc(s) { return s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+function htmlDec(s) { const t = document.createElement('textarea'); t.innerHTML = s; return t.value; }
+function jwtDec(s) {
+  const parts = s.trim().split('.');
+  if (parts.length < 2) throw new Error('Not a JWT');
+  const pretty = x => { try { return JSON.stringify(JSON.parse(b64dec(x)), null, 2); } catch { return b64dec(x); } };
+  return `HEADER:\n${pretty(parts[0])}\n\nPAYLOAD:\n${pretty(parts[1])}\n\nSIGNATURE:\n${parts[2] || '(none)'}`;
+}
+function smartDecode(s) {
+  s = s.trim();
+  if (/^eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/.test(s)) return { label: 'JWT', out: jwtDec(s) };
+  if (s.includes('%')) { try { const d = decodeURIComponent(s); if (d !== s) return { label: 'URL-decoded', out: d }; } catch {} }
+  if (/^[A-Za-z0-9+/_-]+={0,2}$/.test(s) && s.length % 4 === 0) { try { const d = b64dec(s); if (/[\x20-\x7e]/.test(d)) return { label: 'Base64-decoded', out: d }; } catch {} }
+  if (/^[0-9a-fA-F\s]+$/.test(s) && s.replace(/\s/g, '').length % 2 === 0) { try { const d = hexDec(s); if (d) return { label: 'Hex-decoded', out: d }; } catch {} }
+  try { return { label: 'JSON', out: JSON.stringify(JSON.parse(s), null, 2) }; } catch {}
+  return { label: 'no transform matched', out: s };
+}
+const DEC_FN = {
+  b64e: s => ({ label: 'Base64 encoded', out: b64enc(s) }),
+  b64d: s => ({ label: 'Base64 decoded', out: b64dec(s) }),
+  urle: s => ({ label: 'URL encoded', out: encodeURIComponent(s) }),
+  urld: s => ({ label: 'URL decoded', out: decodeURIComponent(s) }),
+  hexe: s => ({ label: 'Hex encoded', out: hexEnc(s) }),
+  hexd: s => ({ label: 'Hex decoded', out: hexDec(s) }),
+  htmle: s => ({ label: 'HTML encoded', out: htmlEnc(s) }),
+  htmld: s => ({ label: 'HTML decoded', out: htmlDec(s) }),
+  jwt: s => ({ label: 'JWT', out: jwtDec(s) }),
+  json: s => ({ label: 'JSON pretty', out: JSON.stringify(JSON.parse(s), null, 2) }),
+  smart: s => smartDecode(s),
+};
+document.querySelectorAll('[data-dec]').forEach(b => b.addEventListener('click', () => {
+  const fn = DEC_FN[b.dataset.dec]; if (!fn) return;
+  try { const r = fn($('decIn').value); $('decOut').value = r.out; $('decLabel').textContent = '· ' + r.label; }
+  catch (e) { $('decOut').value = ''; $('decLabel').textContent = '· error: ' + e.message; }
+}));
+$('decSwap').addEventListener('click', () => { $('decIn').value = $('decOut').value; });
+$('decCopy').addEventListener('click', async () => { try { await navigator.clipboard.writeText($('decOut').value); banner('Output copied.'); } catch {} });
+
+/* ---------- Boot ---------- */
+renderPluginList();
+renderRuleList();
+pushRules(); // sync saved rules to the server
+loadDesktopInfo();
+api('/connections').then(r => applyConnections(r.connected)).catch(() => {});
+api('/scope').then(applyScope).catch(() => {});
+refreshDevices(); setInterval(refreshDevices, 5000);
+api('/status').then(applyStatus).catch(() => {});
+api('/intercept').then(r => { applyInterceptConfig(r.config); intercept.queue = r.pending || []; renderIntercept(); }).catch(() => {});
+connectWs();
+</script>
+</body>
+</html>

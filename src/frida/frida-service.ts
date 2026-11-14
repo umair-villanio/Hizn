@@ -14,8 +14,20 @@
 
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import { Readable } from 'stream';
 import * as FridaJs from 'frida-js';
 import { AdbService } from '../devices/adb-service';
+
+/** Map an Android ABI (ro.product.cpu.abi) to a Frida download arch. */
+function abiToFridaArch(abi: string): 'arm64' | 'arm' | 'x86' | 'x86_64' {
+    if (abi.includes('arm64')) return 'arm64';
+    if (abi.includes('armeabi') || abi === 'armeabi-v7a') return 'arm';
+    if (abi === 'x86_64') return 'x86_64';
+    return 'x86';
+}
+
+/** On-device path where we stage and run frida-server. */
+const DEVICE_FRIDA_PATH = '/data/local/tmp/frida-server';
 
 /** Where the adapted frida scripts live inside this project. */
 const SCRIPT_DIR = path.resolve(__dirname, '../../scripts/frida');
@@ -56,11 +68,49 @@ export class FridaService {
 
     constructor(private adb: AdbService) {}
 
+    /**
+     * Download the correct-ABI frida-server, push it to the device, make it
+     * executable and start it (as root). This is what turns "frida not found"
+     * into a working setup without the user hunting for binaries.
+     *
+     * Requires root to actually run — frida-server must run as uid 0 to
+     * instrument other apps. Returns the frida version provisioned.
+     */
+    async provisionServer(
+        serial: string,
+        abi: string,
+        version = 'latest',
+    ): Promise<{ version: string; arch: string }> {
+        const arch = abiToFridaArch(abi);
+
+        // frida-js streams the already-extracted server binary for us.
+        const stream: Readable = await FridaJs.downloadFridaServer({
+            version,
+            platform: 'android',
+            arch,
+        });
+        const chunks: Buffer[] = [];
+        for await (const chunk of stream) chunks.push(Buffer.from(chunk));
+        const binary = Buffer.concat(chunks);
+
+        await this.adb.pushFile(serial, binary, DEVICE_FRIDA_PATH);
+        await this.adb.shell(serial, `chmod 755 ${DEVICE_FRIDA_PATH}`);
+
+        // Kill any stale instance, then start detached as root.
+        await this.adb.shell(serial, `su -c "killall frida-server 2>/dev/null || true"`);
+        await this.adb.shell(
+            serial,
+            `su -c "nohup ${DEVICE_FRIDA_PATH} >/dev/null 2>&1 &"`,
+        );
+
+        return { version, arch };
+    }
+
     /** Build the config.js prelude with the live CA + proxy values injected. */
     private buildConfig(opts: FridaInjectOptions): string {
         const pem = opts.caPem.trim();
         return `
-/* droidmitm runtime config — generated */
+/* hizn runtime config — generated */
 const CERT_PEM = \`${pem}\`;
 const PROXY_HOST = ${JSON.stringify(opts.proxyHost)};
 const PROXY_PORT = ${opts.proxyPort};
