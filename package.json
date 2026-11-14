@@ -38,6 +38,7 @@
   "build": {
     "appId": "dev.hizn.app",
     "productName": "Hizn",
+    "npmRebuild": false,
     "files": [
       "electron/**/*",
       "dist/**/*",
@@ -52,12 +53,8 @@
       "output": "release"
     },
     "win": {
-      "target": "nsis",
-      "artifactName": "hizn-${version}-setup.${ext}"
-    },
-    "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true
+      "target": "zip",
+      "artifactName": "hizn-${version}-win-x64.${ext}"
     },
     "mac": {
       "target": "dmg",
