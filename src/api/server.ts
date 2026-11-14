@@ -16,6 +16,7 @@ import { AdbService } from '../devices/adb-service';
 import { FridaService } from '../frida/frida-service';
 import { DesktopService } from '../desktop/desktop-service';
 import { RepeaterService } from '../repeater/repeater-service';
+import { PluginService } from '../plugins/plugin-service';
 import { Orchestrator, SetupStep } from '../orchestrator';
 
 export interface ApiServerOptions {
@@ -34,6 +35,7 @@ export class ApiServer {
     private frida = new FridaService(this.adb);
     private desktop = new DesktopService();
     private repeater = new RepeaterService();
+    private plugins = new PluginService();
     /** Serials hizn has actively routed (one-click connected). */
     private connected = new Set<string>();
     /** Server-side flow log so history survives UI reconnects. */
@@ -331,6 +333,35 @@ export class ApiServer {
                     insecure: !!req.body?.insecure,
                 });
                 res.json(result);
+            } catch (e: any) {
+                res.status(400).json({ error: e.message });
+            }
+        });
+
+        // ---- Plugins (file-backed, Burp-style installable) ----
+        api.get('/plugins', async (_req, res) => {
+            res.json({ plugins: await this.plugins.list(), dirs: this.plugins.dirs() });
+        });
+        api.post('/plugins', async (req, res) => {
+            try {
+                const { name, desc, author, source } = req.body ?? {};
+                if (!name || !source) {
+                    res.status(400).json({ error: 'name and source are required' });
+                    return;
+                }
+                res.json(await this.plugins.install({ name, desc, author, source }));
+            } catch (e: any) {
+                res.status(400).json({ error: e.message });
+            }
+        });
+        api.post('/plugins/toggle', async (req, res) => {
+            await this.plugins.setEnabled(req.body?.id, !!req.body?.enabled);
+            res.json({ ok: true });
+        });
+        api.delete('/plugins/:origin/:file', async (req, res) => {
+            try {
+                await this.plugins.remove(`${req.params.origin}/${req.params.file}`);
+                res.json({ ok: true });
             } catch (e: any) {
                 res.status(400).json({ error: e.message });
             }

@@ -44,6 +44,7 @@
       "dist/**/*",
       "ui/**/*",
       "scripts/**/*",
+      "plugins/**/*",
       "package.json"
     ],
     "extraMetadata": {

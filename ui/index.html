@@ -439,7 +439,17 @@
     <div class="card">
       <div class="head"><h2>Plugins</h2><button id="addPlugin" class="btn ghost" style="margin-left:auto;padding:5px 10px;font-size:12.5px">+ Add</button></div>
       <div id="pluginList" class="plugin-list"></div>
-      <div class="geny-hint">Enabled plugins add a tab to the Intercept panel (like Burp extensions). Add custom ones — a tiny JS <code>transform(ctx)</code> that returns text to display.</div>
+      <div id="pluginForm" style="display:none;flex-direction:column;gap:7px;margin-top:9px">
+        <input id="pfName" class="ip-text" style="min-height:0" placeholder="Plugin name" spellcheck="false">
+        <input id="pfDesc" class="ip-text" style="min-height:0" placeholder="Short description" spellcheck="false">
+        <label style="font-size:12px;color:var(--faint)">Or load a plugin file: <input type="file" id="pfFile" accept=".js" style="color:var(--muted)"></label>
+        <textarea id="pfCode" class="ip-text" style="min-height:140px" spellcheck="false" placeholder="JS function body — receives ctx {kind,method,url,statusCode,headers,body,raw}, return a string (HTML allowed)."></textarea>
+        <div style="display:flex;gap:7px">
+          <button id="pfSave" class="btn-primary" style="width:auto;padding:8px 18px">Install</button>
+          <button id="pfCancel" class="btn ghost">Cancel</button>
+        </div>
+      </div>
+      <div class="geny-hint" id="pluginDirsHint">Enabled plugins add a tab to the Intercept panel (like Burp extensions). Drop <code>.js</code> files into the plugins folder, or use + Add — see <code>plugins/README.md</code>.</div>
     </div>
 
     </section>
@@ -1068,69 +1078,83 @@ $('ipForwardAll').addEventListener('click', async () => {
   }
 });
 
-/* ================= Plugins (Burp-extension style) ================= */
-const BUILTIN_PLUGINS = [{
-  id: 'jwt', name: 'JWT Decoder', desc: 'Finds & decodes JWTs in headers/body', builtin: true, enabled: true,
-  // transform returns HTML
-  code: `
-    const out = [];
-    const scan = (ctx.body || '') + '\\n' + Object.values(ctx.headers||{}).join('\\n');
-    const re = /eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]*/g;
-    const seen = new Set();
-    let m;
-    const b64 = (s) => { try { return decodeURIComponent(escape(atob(s.replace(/-/g,'+').replace(/_/g,'/')))); } catch { return '(undecodable)'; } };
-    const pretty = (s) => { try { return JSON.stringify(JSON.parse(s), null, 2); } catch { return s; } };
-    while ((m = re.exec(scan))) {
-      const tok = m[0]; if (seen.has(tok)) continue; seen.add(tok);
-      const [h,p,sig] = tok.split('.');
-      out.push('<div class="jwt-seg"><div class="h">Header</div><pre class="jwt-head">'+pretty(b64(h))+'</pre>'
-        +'<div class="h">Payload</div><pre class="jwt-payload">'+pretty(b64(p))+'</pre>'
-        +'<div class="h">Signature</div><pre class="jwt-sig">'+(sig||'(none)')+'</pre></div>');
-    }
-    return out.length ? out.join('') : '<pre>No JWT found in this message.</pre>';
-  `,
-}];
+/* ================= Plugins (Burp-extension style, file-backed) ================= */
+let plugins = [];
+let pluginDirs = { contrib: '', user: '' };
 
-function loadPlugins() {
-  let custom = [];
-  try { custom = JSON.parse(localStorage.getItem('dm-plugins') || '[]'); } catch {}
-  let enabledMap = {};
-  try { enabledMap = JSON.parse(localStorage.getItem('dm-plugins-enabled') || '{}'); } catch {}
-  const builtins = BUILTIN_PLUGINS.map(p => ({ ...p, enabled: enabledMap[p.id] !== undefined ? enabledMap[p.id] : p.enabled }));
-  const customs = custom.map(p => ({ ...p, builtin: false, enabled: enabledMap[p.id] !== undefined ? enabledMap[p.id] : true }));
-  return [...builtins, ...customs];
+async function refreshPlugins() {
+  try {
+    const r = await api('/plugins');
+    plugins = r.plugins || [];
+    pluginDirs = r.dirs || pluginDirs;
+    if (pluginDirs.user) {
+      $('pluginDirsHint').innerHTML = `Enabled plugins add a tab to the Intercept panel (like Burp extensions). Drop <code>.js</code> files into <code>${esc(pluginDirs.user)}</code> — format: <code>plugins/README.md</code>.`;
+    }
+    renderPluginList();
+  } catch { /* daemon unreachable */ }
 }
-function savePlugins(plugins) {
-  const custom = plugins.filter(p => !p.builtin).map(({ id, name, desc, code }) => ({ id, name, desc, code }));
-  const enabledMap = {}; plugins.forEach(p => enabledMap[p.id] = p.enabled);
-  try { localStorage.setItem('dm-plugins', JSON.stringify(custom)); } catch {}
-  try { localStorage.setItem('dm-plugins-enabled', JSON.stringify(enabledMap)); } catch {}
-}
-let plugins = loadPlugins();
 
 function renderPluginList() {
-  $('pluginList').innerHTML = plugins.map(p => `
+  $('pluginList').innerHTML = plugins.length ? plugins.map(p => `
     <div class="plugin-row">
       <input type="checkbox" data-pid="${p.id}" ${p.enabled ? 'checked' : ''} />
       <div style="flex:1;min-width:0">
-        <div class="pname">${p.name} ${p.builtin ? '' : '<span class="pdesc">· custom</span>'}</div>
-        <div class="pdesc">${p.desc || ''}</div>
+        <div class="pname">${esc(p.name)} <span class="pdesc">· ${p.builtin ? 'community' : 'custom'}${p.version ? ' v' + esc(p.version) : ''}${p.author ? ' · ' + esc(p.author) : ''}</span></div>
+        <div class="pdesc">${esc(p.desc || '')}</div>
       </div>
       ${p.builtin ? '' : `<span class="close" data-del="${p.id}" style="cursor:pointer;color:var(--muted)">×</span>`}
-    </div>`).join('');
+    </div>`).join('') : '<div class="placeholder">No plugins found — drop .js files into the plugins folder.</div>';
   $('pluginList').querySelectorAll('input[data-pid]').forEach(cb =>
-    cb.addEventListener('change', () => { const p = plugins.find(x => x.id === cb.dataset.pid); if (p) p.enabled = cb.checked; savePlugins(plugins); if (intercept.queue[0]) renderPluginTabs(intercept.queue[0]); }));
+    cb.addEventListener('change', () => {
+      const p = plugins.find(x => x.id === cb.dataset.pid); if (!p) return;
+      p.enabled = cb.checked;
+      api('/plugins/toggle', { method: 'POST', body: { id: p.id, enabled: p.enabled } }).catch(() => {});
+      if (intercept.queue[0]) renderPluginTabs(intercept.queue[0]);
+    }));
   $('pluginList').querySelectorAll('[data-del]').forEach(x =>
-    x.addEventListener('click', () => { plugins = plugins.filter(p => p.id !== x.dataset.del); savePlugins(plugins); renderPluginList(); }));
+    x.addEventListener('click', async () => {
+      const p = plugins.find(pl => pl.id === x.dataset.del); if (!p) return;
+      plugins = plugins.filter(pl => pl.id !== p.id);
+      renderPluginList();
+      try { await api('/plugins/' + p.id, { method: 'DELETE' }); } catch { await refreshPlugins(); }
+    }));
 }
+
+/* + Add: inline form (prompt() is a no-op in Electron, so it never worked) */
 $('addPlugin').addEventListener('click', () => {
-  const name = prompt('Plugin name:'); if (!name) return;
-  const desc = prompt('Short description:') || '';
-  const code = prompt('JS body — receives ctx {kind,method,url,statusCode,headers,body}, return a string (HTML allowed):',
-    'return "URL: " + ctx.url;');
-  if (code == null) return;
-  plugins.push({ id: 'c' + Date.now(), name, desc, code, builtin: false, enabled: true });
-  savePlugins(plugins); renderPluginList();
+  const f = $('pluginForm');
+  f.style.display = f.style.display === 'none' ? 'flex' : 'none';
+});
+$('pfCancel').addEventListener('click', () => { $('pluginForm').style.display = 'none'; });
+$('pfFile').addEventListener('change', () => {
+  const file = $('pfFile').files[0]; if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    const lines = String(reader.result || '').split('\n');
+    const fields = {};
+    let i = 0;
+    for (; i < lines.length; i++) {
+      const m = lines[i].match(/^\s*\/\/\s*@(\w+)\s+(.+?)\s*$/);
+      if (!m) break;
+      fields[m[1].toLowerCase()] = m[2];
+    }
+    $('pfName').value = fields.name || file.name.replace(/\.js$/i, '');
+    $('pfDesc').value = fields.description || fields.desc || '';
+    $('pfCode').value = lines.slice(i).join('\n').trim();
+    $('pluginForm').style.display = 'flex';
+  };
+  reader.readAsText(file);
+});
+$('pfSave').addEventListener('click', async () => {
+  const name = $('pfName').value.trim(), source = $('pfCode').value;
+  if (!name || !source.trim()) return banner('Name and code are required.');
+  try {
+    await api('/plugins', { method: 'POST', body: { name, desc: $('pfDesc').value.trim(), source } });
+    $('pfName').value = ''; $('pfDesc').value = ''; $('pfCode').value = ''; $('pfFile').value = '';
+    $('pluginForm').style.display = 'none';
+    banner('Plugin installed.');
+    await refreshPlugins();
+  } catch (e) { banner('Install failed: ' + e.message); }
 });
 
 let activePluginId = null;
@@ -1151,7 +1175,7 @@ function runPlugin(item) {
     headers: item.headers || {}, body: parsed.body, raw: $('ipRaw').value,
   };
   let html;
-  try { html = new Function('ctx', p.code)(ctx); }
+  try { html = new Function('ctx', p.source)(ctx); }
   catch (e) { html = '<pre style="color:var(--red)">Plugin error: ' + (e && e.message) + '</pre>'; }
   out.innerHTML = (typeof html === 'string' && /</.test(html)) ? html : '<pre>' + String(html ?? '') + '</pre>';
   out.classList.add('open');
@@ -1352,7 +1376,7 @@ $('decSwap').addEventListener('click', () => { $('decIn').value = $('decOut').va
 $('decCopy').addEventListener('click', async () => { try { await navigator.clipboard.writeText($('decOut').value); banner('Output copied.'); } catch {} });
 
 /* ---------- Boot ---------- */
-renderPluginList();
+refreshPlugins();
 renderRuleList();
 pushRules(); // sync saved rules to the server
 loadDesktopInfo();
