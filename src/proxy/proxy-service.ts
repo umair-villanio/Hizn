@@ -151,6 +151,13 @@ export class ProxyService extends EventEmitter {
     private rules: MatchReplaceRule[] = [];
     /** Target scope — gates interception to specific hosts. */
     private scope: ScopeConfig = { enabled: false, hosts: [] };
+    /**
+     * Excluded hosts (deny-list). Matching traffic is passed straight through:
+     * not captured to history, not held by Intercept, not rewritten by rules.
+     * Remove a host and it's captured + intercepted again immediately — the
+     * list is consulted live, per request.
+     */
+    private excludeHosts: string[] = [];
     /** flowId → request host, so responses can be scope-matched. */
     private flowHosts = new Map<string, string>();
 
@@ -297,6 +304,26 @@ export class ProxyService extends EventEmitter {
     private inScope(host: string): boolean {
         if (!this.scope.enabled || this.scope.hosts.length === 0) return true;
         return this.scope.hosts.some((p) => this.hostMatches(host, p));
+    }
+
+    // --------------------------------------------------------------- Exclusions
+
+    getExclusions(): string[] {
+        return [...this.excludeHosts];
+    }
+
+    setExclusions(hosts: string[]): string[] {
+        this.excludeHosts = Array.isArray(hosts)
+            ? hosts.map((h) => String(h).trim()).filter(Boolean)
+            : [];
+        this.emit('exclusions-changed', this.getExclusions());
+        return this.getExclusions();
+    }
+
+    /** Should this host be left completely alone (bypass capture + intercept)? */
+    private isExcluded(host: string): boolean {
+        if (this.excludeHosts.length === 0) return false;
+        return this.excludeHosts.some((p) => this.hostMatches(host, p));
     }
 
     /** Apply one rule's match→replace to a string. */
@@ -453,6 +480,8 @@ export class ProxyService extends EventEmitter {
     private async onBeforeRequest(req: any): Promise<any> {
         const host = (req.headers?.['host'] as string) ?? (() => { try { return new URL(req.url).host; } catch { return ''; } })();
         this.flowHosts.set(req.id, host);
+        // Excluded host → pass through untouched (no hold, no rules).
+        if (this.isExcluded(host)) return undefined;
         const holding = this.intercept.enabled && this.intercept.requests && this.inScope(host);
         const bodyRules = this.hasRule('request-body');
         if (!holding && !this.hasRule('request-url') && !this.hasRule('request-header') && !bodyRules) {
@@ -516,6 +545,8 @@ export class ProxyService extends EventEmitter {
     private async onBeforeResponse(res: any): Promise<any> {
         const host = this.flowHosts.get(res.id) ?? '';
         this.flowHosts.delete(res.id);
+        // Excluded host → pass through untouched.
+        if (this.isExcluded(host)) { this.responseWatch.delete(res.id); return undefined; }
         const watched = this.responseWatch.delete(res.id);
         // Per-request "intercept response" bypasses scope; global holding respects it.
         const holding = watched || (this.intercept.enabled && this.intercept.responses && this.inScope(host));
@@ -573,11 +604,14 @@ export class ProxyService extends EventEmitter {
     /** Subscribe to mockttp traffic events and re-emit simplified flows. */
     private wireEvents(server: mockttp.Mockttp): void {
         server.on('request', (req) => {
+            const host = (req.headers['host'] as string) ?? (() => { try { return new URL(req.url).host; } catch { return ''; } })();
+            // Excluded hosts are never logged to history.
+            if (this.isExcluded(host)) return;
             const flow: Flow = {
                 id: req.id,
                 method: req.method,
                 protocol: req.protocol,
-                host: req.headers['host'] as string ?? new URL(req.url).host,
+                host,
                 path: req.path,
                 url: req.url,
                 requestHeaders: req.headers,
