@@ -87,8 +87,11 @@ export class DesktopService {
             'user_pref("network.proxy.socks_remote_dns", true);',
             'user_pref("network.proxy.allow_hijacking_localhost", true);',
             'user_pref("network.proxy.no_proxies_on", "");',
-            // Pick up a CA added to the OS store (optional convenience).
-            'user_pref("security.enterprise_roots.enabled", true);',
+            // The CA is trusted in THIS profile's own cert store (via certutil,
+            // or a one-time manual import into Authorities) — exactly like Burp.
+            // We deliberately do NOT enable security.enterprise_roots: pulling the
+            // CA from the OS store triggers Firefox's MITM heuristic
+            // (MOZILLA_PKIX_ERROR_MITM_DETECTED), which blocks HSTS sites outright.
             // Make the throwaway profile quiet and fast.
             'user_pref("browser.shell.checkDefaultBrowser", false);',
             'user_pref("datareporting.policy.dataSubmissionEnabled", false);',

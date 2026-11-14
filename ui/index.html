@@ -76,17 +76,25 @@
   .sidebar { border-right: 1px solid var(--border); background: var(--panel); min-height: 0; display: flex; }
   .main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 
-  /* ---------- Sidebar rail + section tabs ---------- */
-  .rail { display: flex; flex-direction: column; gap: 3px; padding: 10px 7px; border-right: 1px solid var(--border-soft); flex: none; width: 78px; overflow-y: auto; min-height: 0; }
-  .rail-btn { font: inherit; font-size: 10.5px; font-weight: 650; color: var(--faint); background: none; border: none; border-radius: 9px; padding: 9px 4px; cursor: pointer; display: flex; flex-direction: column; align-items: center; gap: 5px; }
+  /* ---------- Sidebar rail (single nav) ---------- */
+  .rail { display: flex; flex-direction: column; gap: 3px; padding: 10px 7px; flex: none; width: 84px; overflow-y: auto; min-height: 0; }
+  .rail-btn { font: inherit; font-size: 10.5px; font-weight: 650; color: var(--faint); background: none; border: none; border-radius: 9px; padding: 9px 4px; cursor: pointer; display: flex; flex-direction: column; align-items: center; gap: 5px; position: relative; }
   .rail-btn .ri { font-size: 16px; line-height: 1; }
   .rail-btn:hover { color: var(--text); background: var(--panel-2); }
   .rail-btn.active { color: var(--accent); background: var(--raise); }
-  .sect-panel { width: 296px; overflow-y: auto; padding: 14px; min-height: 0; }
-  .sidebar.collapsed .sect-panel { display: none; }
+  .rail-sep { height: 1px; background: var(--border-soft); margin: 7px 8px; flex: none; }
+  .rail-badge { position: absolute; top: 3px; right: 12px; min-width: 15px; height: 15px; padding: 0 4px; border-radius: 999px; background: var(--amber); color: #2a1e00; font-size: 10px; font-weight: 800; display: none; align-items: center; justify-content: center; }
+  .rail-badge.show { display: inline-flex; }
+
+  /* ---------- Setup panel (full-width, centered cards) ---------- */
+  .sect-panel { flex: 1; min-height: 0; overflow-y: auto; display: none; }
+  .sect-panel.show { display: block; }
   .sect { display: none; }
-  .sect.active { display: block; }
-  @media (max-width: 820px) { .sect-panel { width: 240px; } }
+  .sect.active { display: block; max-width: 760px; margin: 0 auto; padding: 24px 20px; }
+
+  /* Intercept on/off controls bar */
+  .ip-controls { display: flex; align-items: center; gap: 20px; padding: 11px 18px; border-bottom: 1px solid var(--border-soft); flex-wrap: wrap; background: var(--panel); }
+  .ip-controls .toggle { margin: 0; }
 
   .card { background: var(--panel-2); border: 1px solid var(--border-soft); border-radius: var(--radius); padding: 16px; margin-bottom: 16px; }
   .card .head { display: flex; align-items: center; gap: 9px; margin-bottom: 13px; }
@@ -299,14 +307,22 @@
   <!-- ---------------- Sidebar ---------------- -->
   <aside class="sidebar">
     <nav class="rail">
-      <button class="rail-btn active" data-sec="connect"><span class="ri">⚡</span>Connect</button>
+      <button class="rail-btn active" data-view="intercept"><span class="ri">⏸</span>Intercept<span id="tabInterceptBadge" class="rail-badge">0</span></button>
+      <button class="rail-btn" data-view="history"><span class="ri">≣</span>History<span id="tabHistoryCount" class="rail-badge" style="background:var(--blue);color:#06233f">0</span></button>
+      <button class="rail-btn" data-view="repeater"><span class="ri">⟳</span>Repeater</button>
+      <button class="rail-btn" data-view="decoder"><span class="ri">⚇</span>Decoder</button>
+      <div class="rail-sep"></div>
+      <button class="rail-btn" data-sec="connect"><span class="ri">⚡</span>Connect</button>
       <button class="rail-btn" data-sec="proxy"><span class="ri">◆</span>Proxy</button>
       <button class="rail-btn" data-sec="burp"><span class="ri">⛓</span>Burp</button>
-      <button class="rail-btn" data-sec="intercept"><span class="ri">⏸</span>Intercept</button>
       <button class="rail-btn" data-sec="rules"><span class="ri">⇄</span>Rules</button>
       <button class="rail-btn" data-sec="scope"><span class="ri">◎</span>Scope</button>
       <button class="rail-btn" data-sec="plugins"><span class="ri">▣</span>Plugins</button>
     </nav>
+  </aside>
+
+  <main class="main">
+    <div id="banner" class="banner"></div>
     <div class="sect-panel">
     <section id="sec-proxy" class="sect">
     <!-- Proxy setup (Burp-style) -->
@@ -331,7 +347,7 @@
     </div>
     </section>
 
-    <section id="sec-connect" class="sect active">
+    <section id="sec-connect" class="sect">
     <!-- Device + one-click connect -->
     <div class="card">
       <div class="head"><h2>Android device</h2><span id="deviceConnState" class="hint" style="margin-left:auto"></span><button id="refreshDevices" class="btn ghost" style="padding:5px 10px;font-size:12.5px;margin-left:8px">↻ Refresh</button></div>
@@ -380,25 +396,6 @@
 
     </section>
 
-    <section id="sec-intercept" class="sect">
-    <div class="card">
-      <div class="head"><h2>Intercept</h2><span class="hint">Burp-style</span></div>
-      <label class="toggle">
-        <input type="checkbox" id="interceptEnabled" /><span class="track"></span>
-        <span class="label">Intercept is on</span>
-      </label>
-      <label class="toggle" style="margin-left:4px">
-        <input type="checkbox" id="interceptRequests" checked /><span class="track"></span>
-        <span class="label">Hold requests</span>
-      </label>
-      <label class="toggle" style="margin-left:4px">
-        <input type="checkbox" id="interceptResponses" /><span class="track"></span>
-        <span class="label">Hold all responses</span>
-      </label>
-      <div class="geny-hint">Held traffic pauses in the <b>Intercept</b> tab until you <b>Forward</b> or <b>Drop</b>. To see one request’s response, tick <b>Intercept response</b> on that request instead of holding every response.</div>
-    </div>
-
-    </section>
 
     <section id="sec-rules" class="sect">
     <div class="card">
@@ -447,22 +444,14 @@
 
     </section>
     </div>
-  </aside>
 
-  <!-- ---------------- Main ---------------- -->
-  <main class="main">
-    <div id="banner" class="banner"></div>
-
-    <!-- Tabs: Intercept | HTTP history -->
-    <div class="tabbar">
-      <button class="tab active" data-view="intercept">Intercept <span id="tabInterceptBadge" class="badge">0</span></button>
-      <button class="tab" data-view="history">HTTP history <span id="tabHistoryCount" class="badge2">0</span></button>
-      <button class="tab" data-view="repeater">Repeater</button>
-      <button class="tab" data-view="decoder">Decoder</button>
-    </div>
-
-    <!-- Intercept view: shows ONLY the currently held request/response -->
+    <!-- Intercept view: on/off controls + the currently held request/response -->
     <section id="view-intercept" class="view active">
+      <div class="ip-controls">
+        <label class="toggle"><input type="checkbox" id="interceptEnabled" /><span class="track"></span><span class="label">Intercept is on</span></label>
+        <label class="toggle"><input type="checkbox" id="interceptRequests" checked /><span class="track"></span><span class="label">Hold requests</span></label>
+        <label class="toggle"><input type="checkbox" id="interceptResponses" /><span class="track"></span><span class="label">Hold responses</span></label>
+      </div>
       <div id="interceptPanel" class="intercept-panel">
         <div class="ip-head">
           <span id="ipKind" class="ip-kind">Request held</span>
@@ -718,6 +707,7 @@ function renderFlows() {
   const list = [...flows.values()].filter(matches);
   $('flowCount').textContent = `${flows.size} request${flows.size === 1 ? '' : 's'}`;
   $('tabHistoryCount').textContent = flows.size;
+  $('tabHistoryCount').classList.toggle('show', flows.size > 0);
   $('emptyFlows').style.display = flows.size ? 'none' : 'block';
   $('flowBody').innerHTML = list.slice(-600).map(f => `
     <tr data-id="${f.id}" class="${f.id === selectedId ? 'sel' : ''}">
@@ -960,35 +950,28 @@ $('interceptRequests').addEventListener('change', pushInterceptConfig);
 $('interceptResponses').addEventListener('change', pushInterceptConfig);
 $('interceptChip').addEventListener('click', () => { $('interceptEnabled').checked = !intercept.config.enabled; pushInterceptConfig(); });
 
-/* ---- tab switching ---- */
+/* ---- rail navigation: one rail drives everything, full-width ---- */
 function switchView(name) {
-  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.view === name));
+  document.querySelector('.sect-panel').classList.remove('show');
   document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.id === 'view-' + name));
+  document.querySelectorAll('.rail-btn').forEach(b => b.classList.toggle('active', b.dataset.view === name));
+  try { localStorage.setItem('dm-nav', 'view:' + name); } catch {}
 }
-document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => switchView(t.dataset.view)));
-
-/* ---- sidebar section tabs (rail) ---- */
 function switchSection(name) {
-  document.querySelectorAll('.rail-btn').forEach(b => b.classList.toggle('active', b.dataset.sec === name));
+  document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+  document.querySelector('.sect-panel').classList.add('show');
   document.querySelectorAll('.sect').forEach(s => s.classList.toggle('active', s.id === 'sec-' + name));
-  try { localStorage.setItem('dm-sec', name); } catch {}
+  document.querySelectorAll('.rail-btn').forEach(b => b.classList.toggle('active', b.dataset.sec === name));
+  try { localStorage.setItem('dm-nav', 'sec:' + name); } catch {}
 }
 document.querySelectorAll('.rail-btn').forEach(b => b.addEventListener('click', () => {
-  const sb = document.querySelector('.sidebar');
-  if (b.classList.contains('active')) {
-    sb.classList.toggle('collapsed');
-    try { localStorage.setItem('dm-sec-collapsed', sb.classList.contains('collapsed') ? '1' : '0'); } catch {}
-  } else {
-    sb.classList.remove('collapsed');
-    try { localStorage.setItem('dm-sec-collapsed', '0'); } catch {}
-    switchSection(b.dataset.sec);
-  }
+  if (b.dataset.view) switchView(b.dataset.view);
+  else if (b.dataset.sec) switchSection(b.dataset.sec);
 }));
-(function initSidebar() {
-  let saved, col;
-  try { saved = localStorage.getItem('dm-sec'); col = localStorage.getItem('dm-sec-collapsed'); } catch {}
-  if (saved && document.getElementById('sec-' + saved)) switchSection(saved);
-  if (col === '1') document.querySelector('.sidebar').classList.add('collapsed');
+(function initNav() {
+  let s; try { s = localStorage.getItem('dm-nav'); } catch {}
+  if (s && s.startsWith('view:') && document.getElementById('view-' + s.slice(5))) switchView(s.slice(5));
+  else if (s && s.startsWith('sec:') && document.getElementById('sec-' + s.slice(4))) switchSection(s.slice(4));
 })();
 
 function renderIntercept() {
@@ -1009,7 +992,7 @@ function renderIntercept() {
       $('ipEmptySub').innerHTML = 'The next request/response will pause here. All traffic is logged under <b>HTTP history</b>.';
     } else {
       $('ipEmptyBig').textContent = 'Intercept is off';
-      $('ipEmptySub').innerHTML = 'Turn on <b>Intercept</b> in the sidebar’s Intercept tab to hold requests here before they’re sent.';
+      $('ipEmptySub').innerHTML = 'Flip <b>Intercept is on</b> above to hold requests here before they’re sent.';
     }
     return;
   }
