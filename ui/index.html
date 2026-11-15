@@ -299,6 +299,28 @@
   .dec-outhead { display: flex; align-items: center; gap: 10px; }
   .dec-outhead label { margin-right: auto; }
 
+  /* ---------- Analyzer ---------- */
+  #view-analyzer { overflow: auto; padding: 16px 18px; }
+  .az-bar { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
+  .az-drop { border: 1.5px dashed var(--border); border-radius: 12px; padding: 26px; text-align: center; color: var(--faint); background: var(--panel-2); line-height: 1.6; }
+  .az-drop.drag { border-color: var(--accent); color: var(--text); background: var(--raise); }
+  .az-report { display: flex; flex-direction: column; gap: 14px; margin-top: 14px; }
+  .az-report:empty { display: none; }
+  .az-card { border: 1px solid var(--border-soft); border-radius: 12px; background: var(--panel); padding: 14px 16px; }
+  .az-card h3 { margin: 0 0 10px; font-size: 12px; text-transform: uppercase; letter-spacing: .5px; color: var(--faint); }
+  .az-kv { display: grid; grid-template-columns: max-content 1fr; gap: 5px 14px; font-size: 13px; }
+  .az-kv .k { color: var(--faint); } .az-kv .v { color: var(--text); font-family: var(--mono); word-break: break-all; }
+  .az-sev { display: inline-block; font-size: 10px; font-weight: 700; text-transform: uppercase; padding: 1px 7px; border-radius: 999px; white-space: nowrap; }
+  .sev-high { background: rgba(229,72,77,.16); color: var(--red); }
+  .sev-medium { background: rgba(240,170,60,.16); color: var(--amber); }
+  .sev-low { background: rgba(70,130,240,.16); color: var(--blue); }
+  .sev-info { background: var(--raise); color: var(--muted); }
+  .az-list { display: flex; flex-direction: column; gap: 6px; }
+  .az-row { display: flex; align-items: center; gap: 10px; font-size: 12.5px; padding: 6px 9px; border: 1px solid var(--border-soft); border-radius: 8px; }
+  .az-row .mono { font-family: var(--mono); word-break: break-all; }
+  .az-chips { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .az-chip { font-size: 12px; padding: 4px 10px; border-radius: 999px; background: var(--raise); color: var(--muted); }
+
   /* ---------- Proxy setup card ---------- */
   .copy-row { display: flex; gap: 8px; align-items: center; }
   .copy-row code { flex: 1; font-family: var(--mono); font-size: 13.5px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 9px 11px; color: var(--accent); }
@@ -352,6 +374,7 @@
       <button class="rail-btn" data-view="repeater"><span class="ri">⟳</span>Repeater</button>
       <button class="rail-btn" data-view="intruder"><span class="ri">⌖</span>Intruder</button>
       <button class="rail-btn" data-view="decoder"><span class="ri">⚇</span>Decoder</button>
+      <button class="rail-btn" data-view="analyzer"><span class="ri">⬡</span>Analyzer</button>
       <div class="rail-sep"></div>
       <button class="rail-btn" data-sec="connect"><span class="ri">⚡</span>Connect</button>
       <button class="rail-btn" data-sec="proxy"><span class="ri">◆</span>Proxy</button>
@@ -746,6 +769,19 @@
         <div class="dec-outhead"><label class="ip-lbl" style="margin:0">Output <span id="decLabel" class="ip-note"></span></label><button id="decSwap" class="btn ghost" style="padding:4px 10px;font-size:12px">⇅ use as input</button><button id="decCopy" class="btn ghost" style="padding:4px 10px;font-size:12px">⧉ copy</button></div>
         <textarea id="decOut" class="ip-text" spellcheck="false" readonly></textarea>
       </div>
+    </section>
+
+    <!-- Analyzer view: static APK scan (MobSF-lite) -->
+    <section id="view-analyzer" class="view">
+      <div class="az-bar">
+        <button id="azPick" class="btn-primary" style="width:auto;padding:10px 18px">⬡ Choose APK…</button>
+        <input id="azFile" type="file" accept=".apk,application/vnd.android.package-archive" style="display:none" />
+        <span id="azFileName" class="ip-hint"></span>
+        <div class="spacer"></div>
+        <span id="azStatus" class="ip-hint"></span>
+      </div>
+      <div id="azDrop" class="az-drop">Drop an <b>.apk</b> here, or click <b>Choose APK</b>.<br><span style="font-size:12px">Static scan — no install, no device needed. Reads manifest, permissions, signing certificate and hardcoded secrets.</span></div>
+      <div id="azReport" class="az-report"></div>
     </section>
   </main>
 </div>
@@ -1801,6 +1837,84 @@ document.querySelectorAll('[data-dec]').forEach(b => b.addEventListener('click',
 }));
 $('decSwap').addEventListener('click', () => { $('decIn').value = $('decOut').value; });
 $('decCopy').addEventListener('click', async () => { try { await navigator.clipboard.writeText($('decOut').value); banner('Output copied.'); } catch {} });
+
+/* ================= Analyzer (static APK scan) ================= */
+$('azPick').addEventListener('click', () => $('azFile').click());
+$('azFile').addEventListener('change', (e) => { const f = e.target.files?.[0]; if (f) azScan(f); e.target.value = ''; });
+(function azWireDrop() {
+  const view = $('view-analyzer'), drop = $('azDrop');
+  ['dragenter', 'dragover'].forEach(ev => view.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add('drag'); }));
+  ['dragleave', 'drop'].forEach(ev => view.addEventListener(ev, (e) => { e.preventDefault(); if (ev === 'drop' || e.target === view || e.target === drop) drop.classList.remove('drag'); }));
+  view.addEventListener('drop', (e) => { const f = e.dataTransfer?.files?.[0]; if (f) azScan(f); });
+})();
+async function azScan(file) {
+  $('azFileName').textContent = file.name + ' · ' + fmtSize(file.size);
+  $('azStatus').textContent = 'Scanning…'; $('azStatus').style.color = 'var(--amber)';
+  $('azReport').innerHTML = '';
+  try {
+    const buf = await file.arrayBuffer();
+    const res = await fetch('/api/analyzer/scan?name=' + encodeURIComponent(file.name),
+      { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: buf });
+    const r = await res.json();
+    if (!res.ok) throw new Error(r.error || res.statusText);
+    renderReport(r);
+    $('azStatus').textContent = `Done — ${r.summary.high} high · ${r.summary.medium} medium`;
+    $('azStatus').style.color = r.summary.high ? 'var(--red)' : 'var(--accent)';
+  } catch (e) { $('azStatus').textContent = 'Failed: ' + e.message; $('azStatus').style.color = 'var(--red)'; }
+}
+function azSev(s) { return `<span class="az-sev sev-${s}">${s}</span>`; }
+function azKv(obj) {
+  return '<div class="az-kv">' + Object.entries(obj).filter(([, v]) => v !== undefined)
+    .map(([k, v]) => `<div class="k">${esc(k)}</div><div class="v">${esc(v == null || v === '' ? '—' : String(v))}</div>`).join('') + '</div>';
+}
+function renderReport(r) {
+  const sum = r.summary || {}, app = r.app || {}, c = r.certificate, flags = r.manifestFlags || {};
+  const exported = (r.components || []).filter(x => x.exported);
+  let h = '';
+  h += `<div class="az-card"><h3>Summary — ${esc(r.file?.name || 'APK')}</h3>
+    <div class="az-chips">
+      <span class="az-chip">${r.file?.sizeBytes ? fmtSize(r.file.sizeBytes) : ''}</span>
+      ${azSev('high')} ${sum.high || 0}  ${azSev('medium')} ${sum.medium || 0}  ${azSev('low')} ${sum.low || 0}
+      <span class="az-chip">${(r.permissions || []).length} perms · ${exported.length} exported · ${(r.secrets || []).length} secrets · ${(r.urls || []).length} urls</span>
+    </div>
+    <div style="margin-top:9px" class="az-kv"><div class="k">sha256</div><div class="v">${esc(r.file?.sha256 || '')}</div></div></div>`;
+
+  h += `<div class="az-card"><h3>App</h3>${azKv({
+    Package: app.package, Version: `${app.versionName || '?'} (code ${app.versionCode || '?'})`,
+    'min / target / compile SDK': `${app.minSdk || '?'} / ${app.targetSdk || '?'} / ${app.compileSdk || '?'}`,
+  })}</div>`;
+
+  if ((r.findings || []).length) h += `<div class="az-card"><h3>Findings (${r.findings.length})</h3><div class="az-list">` +
+    r.findings.map(f => `<div class="az-row">${azSev(f.severity)}<div style="flex:1"><b>${esc(f.title)}</b>${f.detail ? `<div class="pdesc mono">${esc(f.detail)}</div>` : ''}</div><span class="pdesc">${esc(f.section)}</span></div>`).join('') + `</div></div>`;
+
+  h += c
+    ? `<div class="az-card"><h3>Certificate · analysis</h3>${azKv({
+        Subject: c.subject, Issuer: c.issuer, 'Self-signed': c.selfSigned ? 'yes' : 'no', Serial: c.serialNumber,
+        'Valid from': c.validFrom, 'Valid to': c.validTo, 'Signature algo': c.signatureAlgorithm,
+        'Public key': `${c.publicKeyAlgorithm || ''} ${c.keySizeBits ? c.keySizeBits + '-bit' : ''}`,
+        'Signing scheme': c.signatureScheme, 'SHA-256': c.sha256, 'SHA-1': c.sha1,
+      })}</div>`
+    : `<div class="az-card"><h3>Certificate</h3><div class="placeholder">No signing certificate extracted.</div></div>`;
+
+  h += `<div class="az-card"><h3>Manifest analysis</h3>${azKv(flags)}</div>`;
+
+  h += `<div class="az-card"><h3>Permissions (${(r.permissions || []).length})</h3><div class="az-list">` +
+    (r.permissions || []).map(p => `<div class="az-row">${azSev(p.severity)}<span class="mono" style="flex:1">${esc(p.name)}</span>${p.info ? `<span class="pdesc">${esc(p.info)}</span>` : ''}</div>`).join('') + `</div></div>`;
+
+  h += `<div class="az-card"><h3>Exported components (${exported.length} of ${(r.components || []).length})</h3><div class="az-list" style="max-height:260px;overflow:auto">` +
+    (exported.length ? exported.map(x => `<div class="az-row"><span class="az-chip">${esc(x.kind)}</span><span class="mono" style="flex:1">${esc(x.name)}</span>${x.permission ? `<span class="pdesc">perm: ${esc(String(x.permission).split('.').pop())}</span>` : azSev('medium')}</div>`).join('') : '<div class="placeholder">None exported.</div>') + `</div></div>`;
+
+  if ((r.secrets || []).length) h += `<div class="az-card"><h3>Hardcoded secrets (${r.secrets.length})</h3><div class="az-list" style="max-height:300px;overflow:auto">` +
+    r.secrets.map(s => `<div class="az-row">${azSev(s.severity)}<span style="min-width:150px">${esc(s.type)}</span><span class="mono" style="flex:1">${esc(s.match)}</span><span class="pdesc">${esc(s.where)}</span></div>`).join('') + `</div></div>`;
+
+  if ((r.urls || []).length) h += `<div class="az-card"><h3>Endpoints / URLs (${r.urls.length})</h3><div class="az-list" style="max-height:260px;overflow:auto">` +
+    r.urls.map(u => `<div class="az-row"><span class="mono">${esc(u)}</span></div>`).join('') + `</div></div>`;
+
+  if (r.errors && r.errors.length) h += `<div class="az-card"><h3>Notes</h3><div class="az-list">` +
+    r.errors.map(e => `<div class="az-row pdesc">${esc(e)}</div>`).join('') + `</div></div>`;
+
+  $('azReport').innerHTML = h;
+}
 
 /* ---------- Boot ---------- */
 refreshPlugins();

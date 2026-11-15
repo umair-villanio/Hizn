@@ -17,6 +17,7 @@ import { FridaService } from '../frida/frida-service';
 import { DesktopService } from '../desktop/desktop-service';
 import { RepeaterService } from '../repeater/repeater-service';
 import { IntruderService } from '../intruder/intruder-service';
+import { AnalyzerService } from '../analyzer/analyzer-service';
 import { PluginService } from '../plugins/plugin-service';
 import { Orchestrator, SetupStep } from '../orchestrator';
 
@@ -37,6 +38,7 @@ export class ApiServer {
     private desktop = new DesktopService();
     private repeater = new RepeaterService();
     private intruder = new IntruderService();
+    private analyzer = new AnalyzerService();
     private plugins = new PluginService();
     /** Serials hizn has actively routed (one-click connected). */
     private connected = new Set<string>();
@@ -381,6 +383,20 @@ export class ApiServer {
                     insecure: !!req.body?.insecure,
                 });
                 res.json(result);
+            } catch (e: any) {
+                res.status(400).json({ error: e.message });
+            }
+        });
+
+        // ---- Static APK analyzer (upload the .apk as the raw body) ----
+        api.post('/analyzer/scan', express.raw({ type: () => true, limit: '600mb' }), async (req, res) => {
+            try {
+                const buf = req.body;
+                if (!Buffer.isBuffer(buf) || buf.length === 0) {
+                    return res.status(400).json({ error: 'Empty upload — POST the .apk as the raw request body.' });
+                }
+                const name = typeof req.query.name === 'string' ? req.query.name : undefined;
+                res.json(await this.analyzer.analyze(buf, name));
             } catch (e: any) {
                 res.status(400).json({ error: e.message });
             }
