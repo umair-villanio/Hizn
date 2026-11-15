@@ -318,23 +318,43 @@ function pkcs7FirstCertDer(pkcs7Der: Buffer): Buffer | undefined {
 
 const SECRET_PATTERNS: { type: string; re: RegExp; severity: Severity }[] = [
     { type: 'Google API key', re: /AIza[0-9A-Za-z\-_]{35}/g, severity: 'high' },
-    { type: 'AWS access key', re: /AKIA[0-9A-Z]{16}/g, severity: 'high' },
-    { type: 'AWS secret (heuristic)', re: /aws(.{0,20})?(secret|private).{0,20}['"][0-9a-zA-Z/+]{40}['"]/gi, severity: 'high' },
-    { type: 'Private key block', re: /-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----/g, severity: 'high' },
+    { type: 'Firebase app id', re: /1:[0-9]{6,}:android:[0-9a-f]{8,}/g, severity: 'low' },
     { type: 'Firebase URL', re: /https?:\/\/[a-z0-9-]+\.firebaseio\.com/gi, severity: 'medium' },
+    { type: 'AWS access key', re: /\b(?:AKIA|ASIA|AGPA|AIDA|AROA|ANPA)[0-9A-Z]{16}\b/g, severity: 'high' },
+    { type: 'AWS secret (heuristic)', re: /aws(.{0,20})?(secret|private).{0,20}['"][0-9a-zA-Z/+]{40}['"]/gi, severity: 'high' },
+    { type: 'Private key block', re: /-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY(?: BLOCK)?-----/g, severity: 'high' },
     { type: 'Google OAuth client', re: /[0-9]+-[0-9A-Za-z_]{32}\.apps\.googleusercontent\.com/g, severity: 'low' },
     { type: 'Slack token', re: /xox[baprs]-[0-9A-Za-z-]{10,48}/g, severity: 'high' },
-    { type: 'Stripe live key', re: /sk_live_[0-9a-zA-Z]{24,}/g, severity: 'high' },
+    { type: 'Slack webhook', re: /https:\/\/hooks\.slack\.com\/services\/T[0-9A-Z]+\/B[0-9A-Z]+\/[0-9A-Za-z]+/g, severity: 'high' },
+    { type: 'Stripe key', re: /\b(?:sk|rk)_(?:live|test)_[0-9a-zA-Z]{20,}/g, severity: 'high' },
+    { type: 'Stripe publishable key', re: /\bpk_(?:live|test)_[0-9a-zA-Z]{20,}/g, severity: 'low' },
+    { type: 'GitHub token', re: /\b(?:ghp|gho|ghu|ghs|ghr)_[0-9A-Za-z]{36,}/g, severity: 'high' },
+    { type: 'Twilio SID', re: /\bAC[0-9a-fA-F]{32}\b/g, severity: 'medium' },
+    { type: 'SendGrid key', re: /\bSG\.[0-9A-Za-z_\-]{22}\.[0-9A-Za-z_\-]{43}/g, severity: 'high' },
+    { type: 'Mapbox token', re: /\b(?:pk|sk)\.eyJ[0-9A-Za-z_-]+\.[0-9A-Za-z_-]+/g, severity: 'medium' },
+    { type: 'Facebook access token', re: /\bEAACEdEose0cBA[0-9A-Za-z]+/g, severity: 'high' },
     { type: 'JWT', re: /eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g, severity: 'medium' },
-    { type: 'Generic secret assignment', re: /(?:api[_-]?key|secret|passwd|password|token|auth)['"\s:=]{1,6}['"][A-Za-z0-9\-_.=]{12,64}['"]/gi, severity: 'low' },
+    { type: 'Basic-auth URL', re: /https?:\/\/[^\/\s:@"']{1,40}:[^\/\s:@"']{1,40}@[A-Za-z0-9.-]+/g, severity: 'high' },
+    { type: 'Bearer token', re: /[Bb]earer\s+[A-Za-z0-9\-._~+/]{20,}=*/g, severity: 'medium' },
+    { type: 'Generic secret assignment', re: /(?:api[_-]?key|secret|passwd|password|token|auth[_-]?token|access[_-]?key|client[_-]?secret)['"\s:=]{1,6}['"][A-Za-z0-9\-_.=/+]{10,80}['"]/gi, severity: 'low' },
 ];
 const URL_RE = /https?:\/\/[A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%-]{4,}/g;
 
+/**
+ * High-confidence secret resource / meta-data key names (curated, like MobSF).
+ * Deliberately narrow — broad words like "password"/"token" match UI drawables
+ * and labels, so they are matched in VALUES (patterns) instead, not by name.
+ */
+const HIGH_NAME = /(api[_-]?key|apikey|client[_-]?secret|client[_-]?id|secret[_-]?key|access[_-]?key|private[_-]?key|consumer[_-]?(key|secret)|app[_-]?secret|\baws\b|s3[_-]|oauth[_-]?(token|key|secret)|google[_-]?api|google_app_id|gcm_default|fcm_|default_web_client|firebase[_-]|facebook_app|facebook_client|url_facebook|mapbox|sendgrid|twilio|stripe[_-]?(key|secret)|appsflyer|onesignal|mixpanel|braze|crashlytics[._-])/i;
+function nameSeverity(name: string): Severity {
+    return /(secret|private[_-]?key|access[_-]?key|\baws\b|client[_-]?secret|consumer[_-]?secret)/i.test(name) ? 'high' : 'medium';
+}
+
 /** Extract printable ASCII runs from a binary buffer (for DEX string pools). */
-function extractStrings(buf: Buffer, min = 6, cap = 2_000_000): string {
+function extractStrings(buf: Buffer, min = 6, cap = 4_000_000): string {
     const out: string[] = [];
     let cur: number[] = [];
-    const end = Math.min(buf.length, 60 * 1024 * 1024);
+    const end = Math.min(buf.length, 80 * 1024 * 1024);
     for (let i = 0; i < end && out.length < cap; i++) {
         const c = buf[i];
         if (c >= 0x20 && c < 0x7f) cur.push(c);
@@ -342,6 +362,107 @@ function extractStrings(buf: Buffer, min = 6, cap = 2_000_000): string {
     }
     if (cur.length >= min) out.push(Buffer.from(cur).toString('latin1'));
     return out.join('\n');
+}
+
+/** Extract printable UTF-16LE runs (ASCII char followed by 0x00). */
+function extractUtf16(buf: Buffer, min = 6, cap = 1_000_000): string {
+    const out: string[] = [];
+    let cur: number[] = [];
+    const end = Math.min(buf.length - 1, 40 * 1024 * 1024);
+    for (let i = 0; i < end && out.length < cap; i += 2) {
+        const c = buf[i], hi = buf[i + 1];
+        if (hi === 0 && c >= 0x20 && c < 0x7f) cur.push(c);
+        else { if (cur.length >= min) out.push(Buffer.from(cur).toString('latin1')); cur = []; }
+    }
+    if (cur.length >= min) out.push(Buffer.from(cur).toString('latin1'));
+    return out.join('\n');
+}
+
+/* ------------------------------------------------- resources.arsc ---- */
+
+/** Decode a RES_STRING_POOL chunk (header at `start`) into its strings. */
+function decodeStringPool(buf: Buffer, start: number): string[] {
+    const count = buf.readUInt32LE(start + 8);
+    const flags = buf.readUInt32LE(start + 16);
+    const stringsStart = buf.readUInt32LE(start + 20);
+    const utf8 = (flags & (1 << 8)) !== 0;
+    const base = start + stringsStart;
+    const out: string[] = [];
+    for (let i = 0; i < count; i++) {
+        let o = base + buf.readUInt32LE(start + 28 + i * 4);
+        try {
+            if (utf8) {
+                o += (buf[o] & 0x80) ? 2 : 1;
+                let len = buf[o];
+                if (len & 0x80) { len = ((len & 0x7f) << 8) | buf[o + 1]; o += 2; } else { o += 1; }
+                out.push(buf.toString('utf8', o, o + len));
+            } else {
+                let len = buf.readUInt16LE(o); o += 2;
+                if (len & 0x8000) { len = ((len & 0x7fff) << 16) | buf.readUInt16LE(o); o += 2; }
+                out.push(buf.toString('utf16le', o, o + len * 2));
+            }
+        } catch { out.push(''); }
+    }
+    return out;
+}
+
+/** Parse resources.arsc → global string values + resolved name→value string resources. */
+function parseArsc(buf: Buffer): { values: string[]; named: { name: string; value: string }[] } {
+    const res = { values: [] as string[], named: [] as { name: string; value: string }[] };
+    try {
+        if (buf.readUInt16LE(0) !== 0x0002) return res;
+        let pos = buf.readUInt16LE(2); // table headerSize
+        if (buf.readUInt16LE(pos) === 0x0001) { res.values = decodeStringPool(buf, pos); pos += buf.readUInt32LE(pos + 4); }
+        while (pos + 8 <= buf.length) {
+            const type = buf.readUInt16LE(pos);
+            const size = buf.readUInt32LE(pos + 4);
+            if (size < 8) break;
+            if (type === 0x0200) parseArscPackage(buf, pos, size, res);
+            pos += size;
+        }
+    } catch { /* malformed */ }
+    return res;
+}
+
+function parseArscPackage(buf: Buffer, start: number, size: number, res: { values: string[]; named: { name: string; value: string }[] }): void {
+    try {
+        const hdrSize = buf.readUInt16LE(start + 2);
+        const keyStringsOff = buf.readUInt32LE(start + 276); // id(4)+name(256)+typeStrings(4)+lastPublicType(4)+keyStrings(4)
+        const keyNames = keyStringsOff ? decodeStringPool(buf, start + keyStringsOff) : [];
+        let p = start + hdrSize;
+        const end = start + size;
+        while (p + 8 <= end) {
+            const t = buf.readUInt16LE(p);
+            const sz = buf.readUInt32LE(p + 4);
+            if (sz < 8) break;
+            if (t === 0x0201) parseArscType(buf, p, sz, keyNames, res);
+            p += sz;
+        }
+    } catch { /* skip package */ }
+}
+
+function parseArscType(buf: Buffer, start: number, size: number, keyNames: string[], res: { values: string[]; named: { name: string; value: string }[] }): void {
+    try {
+        const hdrSize = buf.readUInt16LE(start + 2);
+        const entryCount = Math.min(buf.readUInt32LE(start + 12), 200000);
+        const entriesStart = buf.readUInt32LE(start + 16);
+        const offArr = start + hdrSize;
+        const entriesBase = start + entriesStart;
+        for (let i = 0; i < entryCount; i++) {
+            const off = buf.readUInt32LE(offArr + i * 4);
+            if (off === 0xffffffff) continue;
+            const e = entriesBase + off;
+            if (e + 8 > start + size) continue;
+            const flags = buf.readUInt16LE(e + 2);
+            const keyIdx = buf.readUInt32LE(e + 4);
+            if (flags & 0x0001) continue;        // complex/map entry — no simple value
+            const v = e + 8;                      // Res_value follows the 8-byte entry
+            if (buf.readUInt8(v + 3) !== 0x03) continue; // TYPE_STRING only
+            const name = keyNames[keyIdx] || '';
+            const value = res.values[buf.readUInt32LE(v + 4)] || '';
+            if (name && value) res.named.push({ name, value });
+        }
+    } catch { /* skip type */ }
 }
 
 /* -------------------------------------------------------- the service ---- */
@@ -358,6 +479,8 @@ export class AnalyzerService {
 
         let zip: Zip;
         try { zip = new Zip(apk); } catch (e: any) { report.errors = [e.message]; return report; }
+
+        let metaData: { name: string; value: string }[] = [];
 
         // ---- Manifest ----
         try {
@@ -396,6 +519,11 @@ export class AnalyzerService {
                     report.components.push({ kind, name, exported, permission: c.attrs['permission'], hasIntentFilter });
                 }
             }
+
+            // <meta-data> entries — a common home for API keys (Maps, FB, etc.).
+            metaData = findAll(root, 'meta-data')
+                .map((m) => ({ name: m.attrs['name'] || '', value: m.attrs['value'] || '' }))
+                .filter((m) => m.name || m.value);
 
             // Manifest flags + findings
             const flags = report.manifestFlags;
@@ -438,7 +566,7 @@ export class AnalyzerService {
         } catch (e: any) { errors.push('Certificate: ' + e.message); }
 
         // ---- Secrets / URLs ----
-        try { this.scanSecrets(zip, report); } catch (e: any) { errors.push('Secrets: ' + e.message); }
+        try { this.scanSecrets(zip, report, metaData); } catch (e: any) { errors.push('Secrets: ' + e.message); }
 
         // Tally
         for (const f of report.findings) report.summary[f.severity]++;
@@ -486,42 +614,71 @@ export class AnalyzerService {
         if (notAfter && notAfter.getTime() < Date.now()) add(report, { section: 'Certificate', title: 'Signing certificate expired', severity: 'medium', detail: 'notAfter ' + notAfter.toISOString() });
     }
 
-    private scanSecrets(zip: Zip, report: AnalyzerReport): void {
+    private scanSecrets(zip: Zip, report: AnalyzerReport, metaData: { name: string; value: string }[]): void {
         const urlSet = new Set<string>();
         const seen = new Set<string>();
-        let budget = 80 * 1024 * 1024; // scanned-bytes budget
+        let budget = 150 * 1024 * 1024; // scanned-bytes budget
 
+        const addSecret = (type: string, match: string, where: string, severity: Severity) => {
+            const m = (match || '').slice(0, 120);
+            const key = type + '|' + m;
+            if (seen.has(key)) return; seen.add(key);
+            if (report.secrets.length < 500) report.secrets.push({ type, match: m, where, severity });
+        };
+
+        // Value-pattern + URL scan over a chunk of text.
         const scanText = (text: string, where: string) => {
+            if (!text) return;
             for (const p of SECRET_PATTERNS) {
                 p.re.lastIndex = 0; let m: RegExpExecArray | null; let hits = 0;
-                while ((m = p.re.exec(text)) && hits < 50) {
-                    hits++;
-                    const match = m[0].slice(0, 80);
-                    const key = p.type + '|' + match;
-                    if (seen.has(key)) continue; seen.add(key);
-                    if (report.secrets.length < 300) report.secrets.push({ type: p.type, match, where, severity: p.severity });
-                }
+                while ((m = p.re.exec(text)) && hits < 60) { hits++; addSecret(p.type, m[0], where, p.severity); }
             }
             URL_RE.lastIndex = 0; let u: RegExpExecArray | null; let uh = 0;
-            while ((u = URL_RE.exec(text)) && uh < 500) {
+            while ((u = URL_RE.exec(text)) && uh < 800) {
                 uh++;
-                const url = u[0].replace(/[).,'"]+$/, '');
-                if (url.length <= 160 && !/w3\.org|android\.com\/apk|schemas\.android/.test(url)) urlSet.add(url);
+                const url = u[0].replace(/[).,'"\\]+$/, '');
+                if (url.length <= 180 && !/w3\.org|android\.com\/apk|schemas\.android|apache\.org\/xml|purl\.org|ns\.adobe/.test(url)) urlSet.add(url);
             }
         };
 
+        // A named key→value pair (from strings.xml or manifest meta-data).
+        const isFilePath = (v: string) => /^res\//i.test(v) || /\.(xml|png|jpe?g|webp|gif|ttf|otf|json|mp3|ogg|ttc)$/i.test(v);
+        const isDottedIdent = (v: string) => /^[A-Za-z][A-Za-z0-9_$]*(\.[A-Za-z0-9_$]+)+$/.test(v); // class/package/constant
+        const scanNamed = (name: string, value: string, where: string) => {
+            if (!value) return;
+            if (!isFilePath(value)) scanText(value, where + ':' + name);   // still catch AIza… etc. in the value
+            if (!name || isFilePath(value) || isDottedIdent(value)) return;
+            if (HIGH_NAME.test(name) && !/\s/.test(value) && value.length >= 4 && value.length <= 256 &&
+                !/^[@#?]/.test(value) && !/^(true|false)$/i.test(value)) {
+                addSecret('Named: ' + name, value, where, nameSeverity(name));
+            }
+        };
+
+        // 1. Manifest <meta-data> (Maps/Facebook/etc. API keys live here).
+        for (const m of metaData) scanNamed(m.name, m.value, 'manifest');
+
+        // 2. Files: DEX string pools, resources.arsc (decoded), and text/native assets.
         for (const { entry, read } of zip.all()) {
             if (budget <= 0) break;
             const n = entry.name;
-            const scanDex = /^classes\d*\.dex$/.test(n);
-            const scanRes = /^(assets\/|res\/raw\/|resources\.arsc$)/.test(n) || /\.(json|xml|properties|txt|js|html|cfg|yml|yaml|env)$/i.test(n);
-            if (!scanDex && !scanRes) continue;
+            if (/\.(png|jpe?g|webp|gif|bmp|ico|mp3|mp4|m4a|ogg|wav|ttf|otf|woff2?|eot)$/i.test(n)) continue; // skip media
             const buf = read(); if (!buf) continue;
             budget -= buf.length;
-            const text = scanDex ? extractStrings(buf) : buf.toString('latin1');
-            scanText(text, n);
+            if (n === 'resources.arsc') {
+                const { values, named } = parseArsc(buf);
+                for (const s of values) scanText(s, 'resources.arsc');
+                for (const kv of named) scanNamed(kv.name, kv.value, 'strings');
+            } else if (/\.dex$/i.test(n)) {
+                scanText(extractStrings(buf), n);
+            } else {
+                scanText(extractStrings(buf, 5), n);
+                if (/\.(xml|arsc)$/i.test(n) || /^res\//.test(n)) scanText(extractUtf16(buf), n);
+            }
         }
-        report.urls = [...urlSet].sort().slice(0, 400);
+
+        // Rank secrets by severity for display.
+        report.secrets.sort((a, b) => sevRank(b.severity) - sevRank(a.severity));
+        report.urls = [...urlSet].sort().slice(0, 500);
     }
 }
 
