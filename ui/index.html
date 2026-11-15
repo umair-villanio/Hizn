@@ -278,7 +278,9 @@
   .it-table tr.sel td { background: var(--raise); }
   .it-detail { display: none; border-top: 2px solid var(--border); }
   .it-detail.open { display: block; }
-  .it-detail .ip-text { min-height: 150px; }
+  .it-detail .ip-grid { overflow: visible; align-items: start; }
+  /* Auto-size to the content (height set in JS); no inner scroll/drag for normal sizes. */
+  #view-intruder .it-detail .ip-text { min-height: 0; resize: vertical; }
   .it-table .st { font-weight: 700; }
   .it-table .st.s2 { color: var(--accent); } .it-table .st.s3 { color: var(--blue); }
   .it-table .st.s4 { color: var(--amber); } .it-table .st.s5 { color: var(--red); }
@@ -1256,6 +1258,15 @@ function showIntruderDetail(i) {
   $('itDetailLabel').textContent = `#${i} · payload: ${r.payload === '' ? '(empty)' : r.payload}`
     + ` · ${r.error ? 'error' : (r.statusCode || '')}${r.durationMs != null ? ' · ' + r.durationMs + ' ms' : ''}`;
   $('itDetail').classList.add('open');
+  // Grow each box to fit its text (page scrolls, not the box) — capped for huge bodies.
+  itAutosize($('itDetailReq'));
+  itAutosize($('itDetailRes'));
+  $('itDetail').scrollIntoView({ block: 'nearest' });
+}
+function itAutosize(el) {
+  el.style.height = 'auto';
+  const max = Math.round((window.innerHeight || 800) * 0.6);
+  el.style.height = Math.min(el.scrollHeight + 4, max) + 'px';
 }
 $('itDetailClose').addEventListener('click', () => { $('itDetail').classList.remove('open'); itDetailCurrent = null; });
 $('itDetailToRepeater').addEventListener('click', () => {
