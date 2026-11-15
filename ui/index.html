@@ -246,7 +246,9 @@
   .rp-line input { flex: 1; }
   .rp-res-head { display: flex; align-items: center; gap: 10px; padding: 11px 18px 0; }
   .rp-status { font-weight: 700; font-size: 14px; }
-  #view-repeater .ip-text { min-height: 120px; }
+  /* Boxes auto-size to content (height set in JS); the view scrolls, not the box. */
+  #view-repeater .ip-grid { flex: none; overflow: visible; align-items: start; }
+  #view-repeater .ip-text { min-height: 84px; resize: vertical; }
 
   /* ---------- Intruder ---------- */
   #view-intruder { overflow: auto; }
@@ -1008,7 +1010,9 @@ function sendToRepeater(f) {
   $('rpStatus').textContent = 'Response'; $('rpMeta').textContent = '';
   $('rpResHeaders').value = ''; $('rpResBody').value = '';
   switchView('repeater');
+  ['rpHeaders', 'rpBody', 'rpResHeaders', 'rpResBody'].forEach(id => itAutosize($(id)));
 }
+['rpHeaders', 'rpBody'].forEach(id => $(id).addEventListener('input', () => itAutosize($(id))));
 $('toRepeater').addEventListener('click', () => sendToRepeater(flows.get(selectedId)));
 $('rpSend').addEventListener('click', async () => {
   const btn = $('rpSend'); btn.disabled = true; btn.textContent = '… Sending';
@@ -1031,7 +1035,10 @@ $('rpSend').addEventListener('click', async () => {
       $('rpResBody').value = r.body || '';
     }
   } catch (e) { $('rpStatus').textContent = 'Error'; $('rpMeta').textContent = e.message; }
-  finally { btn.disabled = false; btn.textContent = 'Send ▶'; }
+  finally {
+    btn.disabled = false; btn.textContent = 'Send ▶';
+    itAutosize($('rpResHeaders')); itAutosize($('rpResBody'));
+  }
 });
 
 /* ================= Intruder ================= */
