@@ -348,7 +348,10 @@ export class ApiServer {
                 body: req.body?.body,
                 insecure: !!req.body?.insecure,
             };
-            const payloads = normPayloads(req.body?.payloads).filter((p) => p.length > 0);
+            // Keep empty strings: Null payloads intentionally send the request
+            // unchanged. The client builds the final list, so we only reject an
+            // empty array, not empty entries.
+            const payloads = normPayloads(req.body?.payloads);
             const attackType = req.body?.attackType === 'batteringram' ? 'batteringram' : 'sniper';
             const positions = this.intruder.countPositions(template);
             if (!template.url) return res.status(400).json({ error: 'A URL is required' });

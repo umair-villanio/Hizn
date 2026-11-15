@@ -254,6 +254,19 @@
   .it-config { border-top: 2px solid var(--border); display: flex; flex-direction: column; }
   .it-config-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 12px 18px 4px; }
   .it-res { border-top: 2px solid var(--border); display: flex; flex-direction: column; }
+  /* Payload builder (Burp-style payload sets) */
+  .it-payloads { padding: 10px 18px 14px; border-top: 1px solid var(--border-soft); }
+  .it-pl-head { display: flex; align-items: center; gap: 10px; margin-bottom: 9px; }
+  .it-pl-head select { width: auto; }
+  .it-opt-grid { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: flex-end; }
+  .it-opt-grid label { display: flex; flex-direction: column; gap: 4px; font-size: 11px; text-transform: uppercase; letter-spacing: .4px; color: var(--faint); }
+  .it-payloads input, .it-payloads select { font-size: 13px; padding: 7px 9px; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 7px; }
+  .it-payloads input[type=number] { width: 110px; }
+  .it-payloads input:focus, .it-payloads select:focus { outline: none; border-color: var(--blue); }
+  .it-proc { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 11px; padding-top: 11px; border-top: 1px dashed var(--border-soft); }
+  .it-proc input { width: 140px; }
+  #itPreviewOut { display: none; margin-top: 9px; max-height: 120px; overflow: auto; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 8px 11px; font-family: var(--mono); font-size: 12px; color: var(--muted); white-space: pre-wrap; word-break: break-all; }
+  #itPreviewOut.open { display: block; }
   .it-table-wrap { overflow: auto; }
   .it-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
   .it-table th { text-align: left; font-weight: 650; color: var(--faint); font-size: 11px; text-transform: uppercase; letter-spacing: .4px; padding: 8px 12px; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--panel); }
@@ -616,9 +629,63 @@
           <button id="itStart" class="btn-primary" style="width:auto;padding:10px 20px">▶ Start attack</button>
           <button id="itStop" class="btn danger" disabled>■ Stop</button>
         </div>
-        <div class="ip-col" style="padding:0 18px 12px">
-          <label class="ip-lbl">Payloads <span class="ip-note" id="itPayloadCount">0 payloads</span></label>
-          <textarea id="itPayloads" class="ip-text" style="min-height:84px" spellcheck="false" placeholder="One payload per line&#10;admin&#10;' OR '1'='1&#10;../../../etc/passwd"></textarea>
+        <div class="it-payloads">
+          <div class="it-pl-head">
+            <label class="ip-lbl" style="margin:0">Payload set — type</label>
+            <select id="itPayloadType" style="width:auto">
+              <option value="list">Simple list</option>
+              <option value="numbers">Numbers</option>
+              <option value="brute">Brute forcer</option>
+              <option value="null">Null payloads</option>
+            </select>
+            <span class="ip-note" id="itPayloadCount">0 payloads</span>
+            <div class="spacer"></div>
+            <button id="itPreview" class="btn ghost" style="padding:5px 11px;font-size:12px">Preview</button>
+          </div>
+
+          <!-- Simple list -->
+          <div class="it-pl-opts" data-pl="list">
+            <textarea id="itPayloads" class="ip-text" style="min-height:84px" spellcheck="false" placeholder="One payload per line&#10;admin&#10;' OR '1'='1&#10;../../../etc/passwd"></textarea>
+          </div>
+
+          <!-- Numbers -->
+          <div class="it-pl-opts" data-pl="numbers" style="display:none">
+            <div class="it-opt-grid">
+              <label>From <input id="itNumFrom" type="number" value="1" /></label>
+              <label>To <input id="itNumTo" type="number" value="100" /></label>
+              <label>Step <input id="itNumStep" type="number" value="1" /></label>
+              <label>Format <select id="itNumBase"><option value="dec">Decimal</option><option value="hex">Hex</option></select></label>
+              <label>Min digits (zero-pad) <input id="itNumPad" type="number" value="0" min="0" /></label>
+            </div>
+            <div class="geny-hint">Generates a numeric range — e.g. IDs, OTPs, page numbers. 1 → 100 step 1 gives 100 payloads.</div>
+          </div>
+
+          <!-- Brute forcer -->
+          <div class="it-pl-opts" data-pl="brute" style="display:none">
+            <div class="it-opt-grid">
+              <label style="flex:1;min-width:220px">Character set <input id="itBruteChars" type="text" value="abcdefghijklmnopqrstuvwxyz0123456789" style="width:100%" /></label>
+              <label>Min length <input id="itBruteMin" type="number" value="1" min="1" /></label>
+              <label>Max length <input id="itBruteMax" type="number" value="3" min="1" /></label>
+            </div>
+            <div class="geny-hint">Every combination of the characters. Grows fast — capped at 10,000 payloads.</div>
+          </div>
+
+          <!-- Null payloads -->
+          <div class="it-pl-opts" data-pl="null" style="display:none">
+            <div class="it-opt-grid">
+              <label>How many <input id="itNullCount" type="number" value="10" min="1" /></label>
+            </div>
+            <div class="geny-hint">Sends the request <b>unchanged</b> N times (empty payload) — handy for race/CSRF or stress checks.</div>
+          </div>
+
+          <!-- Payload processing (applies to every payload above) -->
+          <div class="it-proc">
+            <span class="ip-lbl" style="margin:0">Processing</span>
+            <input id="itPrefix" type="text" placeholder="Add prefix" />
+            <input id="itSuffix" type="text" placeholder="Add suffix" />
+            <select id="itCase" title="Change case"><option value="">Case: as-is</option><option value="upper">UPPERCASE</option><option value="lower">lowercase</option></select>
+          </div>
+          <div id="itPreviewOut"></div>
         </div>
       </div>
       <div class="it-res">
@@ -946,20 +1013,120 @@ $('rpSend').addEventListener('click', async () => {
 let itLastField = null;          // last focused §-markable field
 let itCount = 0, itTotal = 0;    // live result counters
 
+const IT_CAP = 10000;            // max payloads generated client-side
 function countMarkers(s) { return (String(s || '').match(/§[\s\S]*?§/g) || []).length; }
+
+/* ---- payload generators (Burp-style payload types) ---- */
+function itFmtNum(n, base, pad) {
+  let neg = n < 0; let s = base === 'hex' ? Math.trunc(Math.abs(n)).toString(16) : String(Math.abs(n));
+  if (pad > 0) s = s.padStart(pad, '0');
+  return (neg ? '-' : '') + s;
+}
+function genNumbers() {
+  const from = Number($('itNumFrom').value), to = Number($('itNumTo').value);
+  const base = $('itNumBase').value, pad = Math.max(0, parseInt($('itNumPad').value) || 0);
+  let step = Math.abs(Number($('itNumStep').value)) || 1;
+  const out = [];
+  if (!isFinite(from) || !isFinite(to)) return out;
+  if (from <= to) for (let n = from; n <= to && out.length < IT_CAP; n += step) out.push(itFmtNum(n, base, pad));
+  else for (let n = from; n >= to && out.length < IT_CAP; n -= step) out.push(itFmtNum(n, base, pad));
+  return out;
+}
+function itBruteChars() { return [...new Set([...($('itBruteChars').value || '')])]; }
+function genBrute() {
+  const chars = itBruteChars();
+  let min = Math.max(1, parseInt($('itBruteMin').value) || 1);
+  let max = Math.max(min, parseInt($('itBruteMax').value) || min);
+  const out = [];
+  if (!chars.length) return out;
+  const rec = (prefix, len) => {
+    if (out.length >= IT_CAP) return;
+    if (len === 0) { out.push(prefix); return; }
+    for (const c of chars) { if (out.length >= IT_CAP) return; rec(prefix + c, len - 1); }
+  };
+  for (let L = min; L <= max && out.length < IT_CAP; L++) rec('', L);
+  return out;
+}
+function genNull() {
+  const n = Math.min(IT_CAP, Math.max(1, parseInt($('itNullCount').value) || 1));
+  return Array.from({ length: n }, () => '');
+}
+function basePayloads() {
+  switch ($('itPayloadType').value) {
+    case 'numbers': return genNumbers();
+    case 'brute': return genBrute();
+    case 'null': return genNull();
+    default: return $('itPayloads').value.split('\n').map(x => x.replace(/\r$/, '')).filter(x => x.length);
+  }
+}
+function applyProcessing(list) {
+  const pre = $('itPrefix').value || '', suf = $('itSuffix').value || '', cs = $('itCase').value;
+  return list.map(p => {
+    let v = pre + p + suf;
+    if (cs === 'upper') v = v.toUpperCase();
+    else if (cs === 'lower') v = v.toLowerCase();
+    return v;
+  });
+}
+function generatePayloads() { return applyProcessing(basePayloads()); }
+
+/* cheap count without materialising huge lists */
+function payloadCount() {
+  const t = $('itPayloadType').value;
+  if (t === 'numbers') {
+    const from = Number($('itNumFrom').value), to = Number($('itNumTo').value);
+    let step = Math.abs(Number($('itNumStep').value)) || 1;
+    if (!isFinite(from) || !isFinite(to)) return { n: 0 };
+    const c = Math.floor(Math.abs(to - from) / step) + 1;
+    return { n: Math.min(c, IT_CAP), capped: c > IT_CAP };
+  }
+  if (t === 'brute') {
+    const base = itBruteChars().length;
+    let min = Math.max(1, parseInt($('itBruteMin').value) || 1);
+    let max = Math.max(min, parseInt($('itBruteMax').value) || min);
+    let c = 0;
+    for (let L = min; L <= max; L++) { c += Math.pow(base, L); if (c > IT_CAP) return { n: IT_CAP, capped: true }; }
+    return { n: c };
+  }
+  if (t === 'null') { const n = Math.max(1, parseInt($('itNullCount').value) || 1); return { n: Math.min(n, IT_CAP), capped: n > IT_CAP }; }
+  const n = $('itPayloads').value.split('\n').filter(x => x.trim().length).length;
+  return { n };
+}
+
 function updateItPositions() {
   const n = countMarkers($('itUrl').value) + countMarkers($('itHeaders').value) + countMarkers($('itReqBody').value);
-  const pl = $('itPayloads').value.split('\n').filter(x => x.trim().length).length;
   $('itPositions').textContent = `${n} position${n === 1 ? '' : 's'}`;
   $('itPositions').style.color = n ? 'var(--accent)' : 'var(--faint)';
-  $('itPayloadCount').textContent = `${pl} payload${pl === 1 ? '' : 's'}`;
+  const pc = payloadCount();
+  $('itPayloadCount').textContent = `${pc.n} payload${pc.n === 1 ? '' : 's'}${pc.capped ? ' (capped)' : ''}`;
 }
+function switchPayloadType() {
+  const t = $('itPayloadType').value;
+  document.querySelectorAll('#view-intruder .it-pl-opts').forEach(el => {
+    el.style.display = el.dataset.pl === t ? '' : 'none';
+  });
+  $('itPreviewOut').classList.remove('open');
+  updateItPositions();
+}
+$('itPayloadType').addEventListener('change', switchPayloadType);
 ['itUrl', 'itHeaders', 'itReqBody'].forEach(id => {
   const el = $(id);
   el.addEventListener('focus', () => itLastField = el);
   el.addEventListener('input', updateItPositions);
 });
-$('itPayloads').addEventListener('input', updateItPositions);
+['itPayloads', 'itNumFrom', 'itNumTo', 'itNumStep', 'itNumBase', 'itNumPad',
+ 'itBruteChars', 'itBruteMin', 'itBruteMax', 'itNullCount',
+ 'itPrefix', 'itSuffix', 'itCase'].forEach(id => {
+  const el = $(id); if (el) el.addEventListener('input', updateItPositions);
+});
+$('itPreview').addEventListener('click', () => {
+  const list = generatePayloads();
+  const out = $('itPreviewOut');
+  if (!list.length) { out.textContent = '(no payloads — check the settings)'; out.classList.add('open'); return; }
+  const head = list.slice(0, 20).map(p => p === '' ? '∅ (empty)' : p).join('\n');
+  out.textContent = head + (list.length > 20 ? `\n… +${list.length - 20} more (${list.length} total)` : `\n(${list.length} total)`);
+  out.classList.add('open');
+});
 $('itMark').addEventListener('click', () => {
   const el = itLastField || $('itUrl');
   const s = el.selectionStart, e = el.selectionEnd;
@@ -996,8 +1163,8 @@ function itSetRunning(on) {
 $('itStart').addEventListener('click', async () => {
   const positions = countMarkers($('itUrl').value) + countMarkers($('itHeaders').value) + countMarkers($('itReqBody').value);
   if (!positions) return banner('Mark at least one § position first (select text, press § Mark).');
-  const payloads = $('itPayloads').value.split('\n').map(x => x.replace(/\r$/, '')).filter(x => x.length);
-  if (!payloads.length) return banner('Add at least one payload (one per line).');
+  const payloads = generatePayloads();
+  if (!payloads.length) return banner('No payloads to send — check the payload settings.');
   itSetRunning(true);
   $('itRows').innerHTML = ''; $('itEmpty').style.display = 'none';
   $('itStatus').textContent = 'Starting…'; $('itStatus').style.color = 'var(--text)'; $('itMeta').textContent = '';
