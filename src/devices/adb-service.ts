@@ -177,6 +177,38 @@ export class AdbService {
         }
     }
 
+    /** List installed package names (third-party only by default). */
+    async listInstalledPackages(serial: string, thirdPartyOnly = true): Promise<string[]> {
+        const out = await this.shell(serial, `pm list packages${thirdPartyOnly ? ' -3' : ''}`);
+        return out
+            .split('\n')
+            .map((l) => l.trim().replace(/^package:/, ''))
+            .filter(Boolean)
+            .sort();
+    }
+
+    /** Resolve the on-device APK path(s) for a package (base + any splits). */
+    async getApkPaths(serial: string, pkg: string): Promise<string[]> {
+        if (!/^[A-Za-z0-9_.]+$/.test(pkg)) throw new Error('Invalid package name');
+        const out = await this.shell(serial, `pm path ${pkg}`);
+        return out
+            .split('\n')
+            .map((l) => l.trim().replace(/^package:/, ''))
+            .filter(Boolean);
+    }
+
+    /** Pull a file off the device into a Buffer (e.g. an installed APK). */
+    async pullFile(serial: string, remotePath: string): Promise<Buffer> {
+        const device = this.client.getDevice(serial);
+        const transfer = await device.pull(remotePath);
+        return new Promise<Buffer>((resolve, reject) => {
+            const chunks: Buffer[] = [];
+            transfer.on('data', (c: Buffer) => chunks.push(Buffer.from(c)));
+            transfer.on('end', () => resolve(Buffer.concat(chunks)));
+            transfer.on('error', reject);
+        });
+    }
+
     /** Push a file (e.g. the CA PEM) to the device. */
     async pushFile(serial: string, localOrBuffer: string | Buffer, remotePath: string): Promise<void> {
         const device = this.client.getDevice(serial);

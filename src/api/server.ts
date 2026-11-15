@@ -402,6 +402,35 @@ export class ApiServer {
             }
         });
 
+        // List installed (third-party) apps on a device, to pick one to scan.
+        api.get('/analyzer/packages', async (req, res) => {
+            try {
+                const serial = String(req.query.serial || '');
+                if (!serial) return res.status(400).json({ error: 'serial is required' });
+                const packages = await this.adb.listInstalledPackages(serial, req.query.all !== '1');
+                res.json({ packages });
+            } catch (e: any) {
+                res.status(400).json({ error: e.message });
+            }
+        });
+
+        // Pull an installed APK off the device and scan it.
+        api.post('/analyzer/scan-device', async (req, res) => {
+            try {
+                const serial = req.body?.serial, pkg = req.body?.package;
+                if (!serial || !pkg) return res.status(400).json({ error: 'serial and package are required' });
+                const paths = await this.adb.getApkPaths(serial, pkg);
+                if (!paths.length) return res.status(404).json({ error: 'No APK path found for ' + pkg });
+                // Prefer base.apk when the app is split into multiple APKs.
+                const base = paths.find((p) => /base\.apk$/.test(p)) || paths[0];
+                const buf = await this.adb.pullFile(serial, base);
+                if (!buf || !buf.length) return res.status(400).json({ error: 'Failed to pull the APK from the device' });
+                res.json(await this.analyzer.analyze(buf, pkg + '.apk'));
+            } catch (e: any) {
+                res.status(400).json({ error: e.message });
+            }
+        });
+
         // ---- Plugins (file-backed, Burp-style installable) ----
         api.get('/plugins', async (_req, res) => {
             res.json({ plugins: await this.plugins.list(), dirs: this.plugins.dirs() });

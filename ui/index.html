@@ -320,6 +320,8 @@
   .az-row .mono { font-family: var(--mono); word-break: break-all; }
   .az-chips { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
   .az-chip { font-size: 12px; padding: 4px 10px; border-radius: 999px; background: var(--raise); color: var(--muted); }
+  .az-device select { font-size: 13px; padding: 7px 9px; }
+  .az-device .ip-lbl { margin: 0; }
 
   /* ---------- Proxy setup card ---------- */
   .copy-row { display: flex; gap: 8px; align-items: center; }
@@ -779,6 +781,13 @@
         <span id="azFileName" class="ip-hint"></span>
         <div class="spacer"></div>
         <span id="azStatus" class="ip-hint"></span>
+      </div>
+      <div class="az-bar az-device">
+        <span class="ip-lbl" style="margin:0">From device</span>
+        <select id="azDevice" style="width:auto"><option value="">No device</option></select>
+        <select id="azPkg" style="width:auto;max-width:360px"><option value="">Pick an app…</option></select>
+        <button id="azPull" class="btn" style="width:auto;padding:9px 16px">⬇ Pull &amp; scan</button>
+        <button id="azDevRefresh" class="btn ghost" style="padding:7px 11px" title="Refresh devices & apps">↻</button>
       </div>
       <div id="azDrop" class="az-drop">Drop an <b>.apk</b> here, or click <b>Choose APK</b>.<br><span style="font-size:12px">Static scan — no install, no device needed. Reads manifest, permissions, signing certificate and hardcoded secrets.</span></div>
       <div id="azReport" class="az-report"></div>
@@ -1862,6 +1871,50 @@ async function azScan(file) {
     $('azStatus').style.color = r.summary.high ? 'var(--red)' : 'var(--accent)';
   } catch (e) { $('azStatus').textContent = 'Failed: ' + e.message; $('azStatus').style.color = 'var(--red)'; }
 }
+/* ---- Pull an installed APK off a device and scan it ---- */
+async function azLoadDevices() {
+  try {
+    const devices = await api('/devices');
+    const sel = $('azDevice'); const prev = sel.value;
+    sel.innerHTML = devices.length
+      ? devices.map(d => `<option value="${esc(d.serial)}">${esc(d.model || d.serial)}</option>`).join('')
+      : '<option value="">No device connected</option>';
+    if (devices.some(d => d.serial === prev)) sel.value = prev;
+    if (sel.value) azLoadPackages();
+  } catch { /* backend unavailable */ }
+}
+async function azLoadPackages() {
+  const serial = $('azDevice').value, sel = $('azPkg');
+  if (!serial) { sel.innerHTML = '<option value="">No device</option>'; return; }
+  sel.innerHTML = '<option value="">Loading apps…</option>';
+  try {
+    const r = await api('/analyzer/packages?serial=' + encodeURIComponent(serial));
+    const pkgs = r.packages || [];
+    sel.innerHTML = pkgs.length
+      ? '<option value="">Pick an app… (' + pkgs.length + ')</option>' + pkgs.map(p => `<option value="${esc(p)}">${esc(p)}</option>`).join('')
+      : '<option value="">No third-party apps found</option>';
+  } catch (e) { sel.innerHTML = '<option value="">Could not list apps</option>'; }
+}
+$('azDevice').addEventListener('change', azLoadPackages);
+$('azDevRefresh').addEventListener('click', azLoadDevices);
+$('azPull').addEventListener('click', async () => {
+  const serial = $('azDevice').value, pkg = $('azPkg').value;
+  if (!serial || !pkg) return banner('Pick a device and an app first.');
+  const btn = $('azPull'); btn.disabled = true; btn.textContent = '… Pulling';
+  $('azStatus').textContent = 'Pulling & scanning ' + pkg + '…'; $('azStatus').style.color = 'var(--amber)';
+  $('azReport').innerHTML = '';
+  try {
+    const r = await api('/analyzer/scan-device', { method: 'POST', body: { serial, package: pkg } });
+    $('azFileName').textContent = pkg + ' · from device';
+    renderReport(r);
+    $('azStatus').textContent = `Done — ${r.summary.high} high · ${r.summary.medium} medium`;
+    $('azStatus').style.color = r.summary.high ? 'var(--red)' : 'var(--accent)';
+  } catch (e) { $('azStatus').textContent = 'Failed: ' + e.message; $('azStatus').style.color = 'var(--red)'; }
+  finally { btn.disabled = false; btn.textContent = '⬇ Pull & scan'; }
+});
+// Refresh the device/app list whenever the Analyzer tab is opened.
+document.querySelector('[data-view="analyzer"]')?.addEventListener('click', azLoadDevices);
+
 function azSev(s) { return `<span class="az-sev sev-${s}">${s}</span>`; }
 function azKv(obj) {
   return '<div class="az-kv">' + Object.entries(obj).filter(([, v]) => v !== undefined)
@@ -1924,6 +1977,7 @@ loadDesktopInfo();
 api('/connections').then(r => applyConnections(r.connected)).catch(() => {});
 api('/scope').then(applyScope).catch(() => {});
 updateItPositions();
+azLoadDevices();
 refreshDevices(); setInterval(refreshDevices, 5000);
 api('/status').then(applyStatus).catch(() => {});
 api('/intercept').then(r => { applyInterceptConfig(r.config); intercept.queue = r.pending || []; renderIntercept(); }).catch(() => {});
