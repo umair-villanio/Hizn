@@ -51,6 +51,21 @@ export interface IntruderRow {
     length?: number;
     durationMs?: number;
     error?: string;
+    /** The exact request sent (so the UI can show it per row, like Burp). */
+    request?: {
+        method: string;
+        url: string;
+        headers?: Record<string, string | string[] | undefined>;
+        body?: string;
+    };
+    /** The response received (body capped for transport). */
+    response?: {
+        statusCode?: number;
+        statusMessage?: string;
+        headers?: Record<string, string | string[] | undefined>;
+        body?: string;
+        truncated?: boolean;
+    };
 }
 
 export interface IntruderSummary {
@@ -62,6 +77,9 @@ export interface IntruderSummary {
 
 /** Hard ceiling so a fat payload list can't spawn an unbounded attack. */
 const MAX_REQUESTS = 5000;
+
+/** Cap per-row response body kept for the detail view (keeps WS frames sane). */
+const MAX_ROW_BODY = 256 * 1024;
 
 const MARKER = /§([\s\S]*?)§/g;
 
@@ -162,7 +180,10 @@ export class IntruderService extends EventEmitter {
             for (let n = 0; n < total; n++) {
                 if (this.cancel) break;
                 const job = jobs[n];
-                const resp = await this.repeater.send(this.build(cfg.template, job.pick));
+                const sent = this.build(cfg.template, job.pick);
+                const resp = await this.repeater.send(sent);
+                const body = resp.body ?? '';
+                const truncated = body.length > MAX_ROW_BODY;
                 const row: IntruderRow = {
                     index: n,
                     position: job.position,
@@ -172,6 +193,19 @@ export class IntruderService extends EventEmitter {
                     length: resp.bodySize,
                     durationMs: resp.durationMs,
                     error: resp.error,
+                    request: {
+                        method: sent.method ?? 'GET',
+                        url: sent.url,
+                        headers: sent.headers,
+                        body: sent.body,
+                    },
+                    response: resp.error ? undefined : {
+                        statusCode: resp.statusCode,
+                        statusMessage: resp.statusMessage,
+                        headers: resp.headers,
+                        body: truncated ? body.slice(0, MAX_ROW_BODY) : body,
+                        truncated,
+                    },
                 };
                 completed++;
                 this.emit('row', row);

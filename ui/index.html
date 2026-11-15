@@ -273,7 +273,12 @@
   .it-table td { padding: 7px 12px; border-bottom: 1px solid var(--border-soft); font-family: var(--mono); color: var(--text); vertical-align: top; }
   .it-table td.pl { word-break: break-all; white-space: pre-wrap; }
   .it-table td.num { text-align: right; color: var(--muted); }
+  .it-table tbody tr { cursor: pointer; }
   .it-table tr:hover td { background: var(--panel-2); }
+  .it-table tr.sel td { background: var(--raise); }
+  .it-detail { display: none; border-top: 2px solid var(--border); }
+  .it-detail.open { display: block; }
+  .it-detail .ip-text { min-height: 150px; }
   .it-table .st { font-weight: 700; }
   .it-table .st.s2 { color: var(--accent); } .it-table .st.s3 { color: var(--blue); }
   .it-table .st.s4 { color: var(--amber); } .it-table .st.s5 { color: var(--red); }
@@ -701,6 +706,24 @@
           </table>
           <div id="itEmpty" class="empty"><div class="big">No attack run yet</div>Mark payload positions with §, add payloads, then <b>Start attack</b>.</div>
         </div>
+        <div id="itDetail" class="it-detail">
+          <div class="rp-res-head">
+            <span class="rp-status">Request &amp; response — <span id="itDetailLabel" class="ip-hint"></span></span>
+            <div class="spacer"></div>
+            <button id="itDetailToRepeater" class="btn ghost" style="padding:4px 10px;font-size:12px">→ Repeater</button>
+            <span class="close" id="itDetailClose" style="cursor:pointer;font-size:20px;line-height:1;color:var(--muted)">×</span>
+          </div>
+          <div class="ip-grid">
+            <div class="ip-col">
+              <label class="ip-lbl">Request sent</label>
+              <textarea id="itDetailReq" class="ip-text" readonly spellcheck="false"></textarea>
+            </div>
+            <div class="ip-col">
+              <label class="ip-lbl">Response <span id="itDetailResNote" class="ip-note"></span></label>
+              <textarea id="itDetailRes" class="ip-text" readonly spellcheck="false"></textarea>
+            </div>
+          </div>
+        </div>
       </div>
     </section>
 
@@ -1012,6 +1035,8 @@ $('rpSend').addEventListener('click', async () => {
 /* ================= Intruder ================= */
 let itLastField = null;          // last focused §-markable field
 let itCount = 0, itTotal = 0;    // live result counters
+let itResults = [];              // full req/resp per row, for the detail view
+let itDetailCurrent = null;
 
 const IT_CAP = 10000;            // max payloads generated client-side
 function countMarkers(s) { return (String(s || '').match(/§[\s\S]*?§/g) || []).length; }
@@ -1166,6 +1191,7 @@ $('itStart').addEventListener('click', async () => {
   const payloads = generatePayloads();
   if (!payloads.length) return banner('No payloads to send — check the payload settings.');
   itSetRunning(true);
+  itResults = []; $('itDetail').classList.remove('open'); itDetailCurrent = null;
   $('itRows').innerHTML = ''; $('itEmpty').style.display = 'none';
   $('itStatus').textContent = 'Starting…'; $('itStatus').style.color = 'var(--text)'; $('itMeta').textContent = '';
   itCount = 0; itTotal = 0;
@@ -1185,6 +1211,7 @@ $('itStop').addEventListener('click', () => { api('/intruder/stop', { method: 'P
 
 function itOnStart(info) {
   itTotal = info.total || 0; itCount = 0;
+  itResults = []; $('itDetail').classList.remove('open'); itDetailCurrent = null;
   $('itRows').innerHTML = ''; $('itEmpty').style.display = 'none';
   itSetRunning(true);
   $('itStatus').textContent = `Running 0 / ${itTotal}`; $('itStatus').style.color = 'var(--amber)';
@@ -1192,9 +1219,11 @@ function itOnStart(info) {
 }
 function itOnRow(row) {
   itCount++;
+  itResults[row.index] = row;
   const stClass = row.error ? 'err' : (row.statusCode ? 's' + String(row.statusCode)[0] : '');
   const st = row.error ? 'ERR' : (row.statusCode || '—');
   const tr = document.createElement('tr');
+  tr.dataset.i = row.index;
   tr.innerHTML = `<td class="num">${row.index}</td><td class="num">${row.position == null ? '·' : row.position}</td>`
     + `<td class="pl">${esc(row.payload)}</td>`
     + `<td class="st ${stClass}" title="${esc(row.error || '')}">${st}</td>`
@@ -1203,6 +1232,36 @@ function itOnRow(row) {
   $('itRows').appendChild(tr);
   if (itTotal) $('itStatus').textContent = `Running ${itCount} / ${itTotal}`;
 }
+$('itRows').addEventListener('click', (e) => {
+  const tr = e.target.closest('tr'); if (!tr || tr.dataset.i == null) return;
+  showIntruderDetail(+tr.dataset.i);
+});
+function showIntruderDetail(i) {
+  const r = itResults[i]; if (!r) return;
+  itDetailCurrent = i;
+  $('itRows').querySelectorAll('tr').forEach(t => t.classList.toggle('sel', +t.dataset.i === i));
+  const req = r.request || {};
+  $('itDetailReq').value = `${req.method || 'GET'} ${req.url || ''} HTTP/1.1\n`
+    + headersToText(req.headers) + '\n\n' + (req.body || '');
+  let note = '';
+  if (r.error) {
+    $('itDetailRes').value = '⚠ Request failed: ' + r.error;
+  } else {
+    const rs = r.response || {};
+    $('itDetailRes').value = `HTTP/1.1 ${rs.statusCode || ''} ${rs.statusMessage || ''}`.trim() + '\n'
+      + headersToText(rs.headers) + '\n\n' + (rs.body || '');
+    if (rs.truncated) note = '(body truncated)';
+  }
+  $('itDetailResNote').textContent = note;
+  $('itDetailLabel').textContent = `#${i} · payload: ${r.payload === '' ? '(empty)' : r.payload}`
+    + ` · ${r.error ? 'error' : (r.statusCode || '')}${r.durationMs != null ? ' · ' + r.durationMs + ' ms' : ''}`;
+  $('itDetail').classList.add('open');
+}
+$('itDetailClose').addEventListener('click', () => { $('itDetail').classList.remove('open'); itDetailCurrent = null; });
+$('itDetailToRepeater').addEventListener('click', () => {
+  const r = itResults[itDetailCurrent]; if (!r || !r.request) return;
+  sendToRepeater({ method: r.request.method, url: r.request.url, requestHeaders: r.request.headers, body: r.request.body });
+});
 function itOnDone(s) {
   itSetRunning(false);
   if (s && s.error) {
