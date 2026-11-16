@@ -1598,9 +1598,10 @@ async function refreshPlugins() {
     plugins = r.plugins || [];
     pluginDirs = r.dirs || pluginDirs;
     if (pluginDirs.user) {
-      $('pluginDirsHint').innerHTML = `Enabled plugins add a tab to the Intercept panel (like Burp extensions). Drop <code>.js</code> files into <code>${esc(pluginDirs.user)}</code> — format: <code>plugins/README.md</code>.`;
+      $('pluginDirsHint').innerHTML = `Message plugins add a tab to the Intercept panel; <b>extension</b> plugins (<code>// @kind extension</code>) can add rail tabs, buttons &amp; live traffic hooks. Drop <code>.js</code> files into <code>${esc(pluginDirs.user)}</code> — see <code>plugins/README.md</code>.`;
     }
     renderPluginList();
+    syncExtensions();
   } catch { /* daemon unreachable */ }
 }
 
@@ -1609,7 +1610,7 @@ function renderPluginList() {
     <div class="plugin-row">
       <input type="checkbox" data-pid="${p.id}" ${p.enabled ? 'checked' : ''} />
       <div style="flex:1;min-width:0">
-        <div class="pname">${esc(p.name)} <span class="pdesc">· ${p.builtin ? 'community' : 'custom'}${p.version ? ' v' + esc(p.version) : ''}${p.author ? ' · ' + esc(p.author) : ''}</span></div>
+        <div class="pname">${esc(p.name)} <span class="pdesc">· ${isExtensionPlugin(p) ? 'extension' : 'message'} · ${p.builtin ? 'community' : 'custom'}${p.version ? ' v' + esc(p.version) : ''}${p.author ? ' · ' + esc(p.author) : ''}</span></div>
         <div class="pdesc">${esc(p.desc || '')}</div>
       </div>
       ${p.builtin ? '' : `<span class="close" data-del="${p.id}" style="cursor:pointer;color:var(--muted)">×</span>`}
@@ -1619,12 +1620,14 @@ function renderPluginList() {
       const p = plugins.find(x => x.id === cb.dataset.pid); if (!p) return;
       p.enabled = cb.checked;
       api('/plugins/toggle', { method: 'POST', body: { id: p.id, enabled: p.enabled } }).catch(() => {});
+      syncExtensions();
       if (intercept.queue[0]) renderPluginTabs(intercept.queue[0]);
     }));
   $('pluginList').querySelectorAll('[data-del]').forEach(x =>
     x.addEventListener('click', async () => {
       const p = plugins.find(pl => pl.id === x.dataset.del); if (!p) return;
       plugins = plugins.filter(pl => pl.id !== p.id);
+      teardownExtension(p.id);
       renderPluginList();
       try { await api('/plugins/' + p.id, { method: 'DELETE' }); } catch { await refreshPlugins(); }
     }));
@@ -1669,7 +1672,7 @@ $('pfSave').addEventListener('click', async () => {
 
 let activePluginId = null;
 function renderPluginTabs(item) {
-  const on = plugins.filter(p => p.enabled);
+  const on = plugins.filter(p => p.enabled && !isExtensionPlugin(p));
   $('pluginTabs').innerHTML = on.map(p => `<span class="plugin-tab ${p.id === activePluginId ? 'active' : ''}" data-tab="${p.id}">${p.name}</span>`).join('');
   $('pluginTabs').querySelectorAll('[data-tab]').forEach(t =>
     t.addEventListener('click', () => { activePluginId = activePluginId === t.dataset.tab ? null : t.dataset.tab; runPlugin(item); renderPluginTabs(item); }));
@@ -1690,6 +1693,100 @@ function runPlugin(item) {
   out.innerHTML = (typeof html === 'string' && /</.test(html)) ? html : '<pre>' + String(html ?? '') + '</pre>';
   out.classList.add('open');
 }
+
+/* ========= Extension plugins (flexible: tabs / buttons / flow hooks) ========= */
+// An extension plugin is a plugin whose header declares `// @kind extension`.
+// It runs once at load and receives the `hizn` API to contribute UI + behavior.
+const EXT = { loaded: {} };          // pluginId -> { teardown: [fn] }
+const extFlowListeners = [];         // { pluginId, fn }
+
+function isExtensionPlugin(p) { return !!p && /\/\/\s*@kind\s+extension/i.test(p.source || ''); }
+function extSlug(s) { return String(s).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''); }
+
+function makeHiznApi(pluginId) {
+  const reg = EXT.loaded[pluginId];
+  return {
+    apiVersion: 1,
+    esc: esc,
+    banner: (m) => banner(m),
+    api: (p, o) => api(p, o),
+    switchTo: (tabId) => switchView('xt-' + extSlug(pluginId + '-' + tabId)),
+    storage: {
+      get(k) { try { return JSON.parse(localStorage.getItem('dm-ext:' + pluginId + ':' + k)); } catch { return null; } },
+      set(k, v) { try { localStorage.setItem('dm-ext:' + pluginId + ':' + k, JSON.stringify(v)); } catch {} },
+    },
+    registerTab(opts) { extRegisterTab(pluginId, opts || {}); },
+    registerButton(opts) { extRegisterButton(pluginId, opts || {}); },
+    onFlow(fn) {
+      if (typeof fn !== 'function') return;
+      extFlowListeners.push({ pluginId, fn });
+      reg.teardown.push(() => { const i = extFlowListeners.findIndex((x) => x.fn === fn); if (i >= 0) extFlowListeners.splice(i, 1); });
+    },
+  };
+}
+
+function extRegisterTab(pluginId, { id, title, icon, render }) {
+  const name = 'xt-' + extSlug(pluginId + '-' + (id || title || 'tab'));
+  const viewId = 'view-' + name;
+  if (document.getElementById(viewId)) return;
+  const btn = document.createElement('button');
+  btn.className = 'rail-btn'; btn.dataset.view = name;
+  btn.innerHTML = '<span class="ri">' + (icon || '▦') + '</span>' + esc(title || 'Plugin');
+  btn.addEventListener('click', () => switchView(name));
+  const rail = document.querySelector('.rail');
+  rail.insertBefore(btn, rail.querySelector('.rail-sep'));
+  const sec = document.createElement('section');
+  sec.className = 'view'; sec.id = viewId;
+  document.querySelector('main.main').appendChild(sec);
+  try { if (render) render(sec); } catch (e) { sec.innerHTML = '<div style="padding:18px;color:var(--red)">Plugin render error: ' + esc(e.message) + '</div>'; }
+  EXT.loaded[pluginId].teardown.push(() => { btn.remove(); sec.remove(); });
+}
+
+function extLocationEl(location) {
+  if (location === 'history-detail') return document.querySelector('#detailPane .dhead');
+  if (location === 'intercept-actions') return document.querySelector('#view-intercept .ip-actions');
+  if (location === 'repeater') return document.querySelector('#view-repeater .rp-line');
+  return null;
+}
+function extButtonCtx(location) {
+  if (location === 'history-detail') return flows.get(selectedId) || null;
+  if (location === 'intercept-actions') {
+    const it = intercept.queue[0]; if (!it) return null;
+    const p = parseRaw($('ipRaw').value); const t = p.startLine.split(/\s+/);
+    return it.kind === 'request' ? { method: t[0], url: t[1], requestHeaders: p.headers, body: p.body, kind: it.kind } : { ...it, kind: it.kind };
+  }
+  if (location === 'repeater') return { method: $('rpMethod').value, url: $('rpUrl').value, requestHeaders: textToHeaders($('rpHeaders').value), body: $('rpBody').value };
+  return null;
+}
+function extRegisterButton(pluginId, { location, label, title, onClick }) {
+  const host = extLocationEl(location); if (!host) return;
+  const b = document.createElement('button');
+  b.className = 'btn ghost'; b.style.cssText = 'padding:4px 10px;font-size:12px';
+  b.textContent = label || 'Plugin'; if (title) b.title = title;
+  b.addEventListener('click', () => { try { if (onClick) onClick(extButtonCtx(location)); } catch (e) { banner('Plugin error: ' + e.message); } });
+  if (location === 'history-detail' && host.querySelector('.close')) host.insertBefore(b, host.querySelector('.close'));
+  else host.appendChild(b);
+  EXT.loaded[pluginId].teardown.push(() => b.remove());
+}
+
+function teardownExtension(pluginId) {
+  const reg = EXT.loaded[pluginId]; if (!reg) return;
+  for (const fn of reg.teardown.splice(0)) { try { fn(); } catch {} }
+  delete EXT.loaded[pluginId];
+}
+function loadExtension(p) {
+  if (EXT.loaded[p.id]) return;
+  EXT.loaded[p.id] = { teardown: [] };
+  try { new Function('hizn', p.source)(makeHiznApi(p.id)); }
+  catch (e) { banner('Plugin "' + p.name + '" failed to load: ' + e.message); teardownExtension(p.id); }
+}
+function syncExtensions() {
+  const want = plugins.filter((p) => p.enabled && isExtensionPlugin(p));
+  const wantIds = new Set(want.map((p) => p.id));
+  for (const id of Object.keys(EXT.loaded)) if (!wantIds.has(id)) teardownExtension(id);
+  for (const p of want) loadExtension(p);
+}
+function dispatchExtFlow(flow) { for (const x of extFlowListeners.slice()) { try { x.fn(flow); } catch {} } }
 
 /* ================= Auto-connect Genymotion ================= */
 let autoConnectTried = false;
@@ -1785,7 +1882,7 @@ function connectWs() {
   const ws = new WebSocket(`ws://${location.host}/ws`);
   ws.onmessage = (ev) => {
     const m = JSON.parse(ev.data);
-    if (m.type === 'flow') { flows.set(m.flow.id, m.flow); renderFlows(); }
+    if (m.type === 'flow') { flows.set(m.flow.id, m.flow); renderFlows(); dispatchExtFlow(m.flow); }
     else if (m.type === 'flow-snapshot') { flows.clear(); for (const f of m.flows || []) flows.set(f.id, f); renderFlows(); }
     else if (m.type === 'flows-cleared') { flows.clear(); selectedId = null; closeDetail(); renderFlows(); }
     else if (m.type === 'flow-update') { const f = flows.get(m.update.id); if (f) { Object.assign(f, m.update); renderFlows(); if (f.id === selectedId) showDetail(f); } }

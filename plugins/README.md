@@ -1,8 +1,50 @@
 # Hizn Plugins
 
 Burp-style installable extensions. Drop a `.js` file in a plugins folder and it
-shows up in **Plugins → list**; enable it to get a tab in the **Intercept** panel
-that renders extra info about the held request/response.
+shows up in **Plugins → list**. There are two kinds:
+
+- **Message plugins** (default) — enable one to get a tab in the **Intercept**
+  panel that renders extra info about the held request/response. It is the body
+  of a function that receives `ctx` and returns a string (see below).
+- **Extension plugins** — declare `// @kind extension` in the header. These are
+  fully flexible: they run once at load, receive a `hizn` API, and can add new
+  **rail tabs**, inject **buttons** into existing toolbars, hook **live
+  traffic**, call Hizn's API, and store state. See *Extension plugins* below.
+
+## Extension plugins (flexible: tabs / buttons / live hooks)
+
+Add `// @kind extension` to the header. The file runs once and receives `hizn`:
+
+```js
+// @name   Site Map
+// @kind   extension
+
+hizn.registerTab({ id: 'sitemap', title: 'Site Map', icon: '◳',
+  render(container) { container.innerHTML = '<h3>My tab</h3>'; } });
+
+hizn.registerButton({ location: 'history-detail', label: '⎘ Copy as fetch()',
+  onClick(flow) { /* flow = the selected request */ } });
+
+hizn.onFlow(f => { /* called on every captured request, live */ });
+```
+
+### `hizn` API
+
+| Member | What it does |
+| --- | --- |
+| `registerTab({id,title,icon,render(el)})` | Adds a left-rail tab + view; `render` fills the view element. |
+| `registerButton({location,label,title,onClick(ctx)})` | Adds a button. `location`: `history-detail`, `intercept-actions`, or `repeater`; `ctx` is the current request there. |
+| `onFlow(fn)` | Calls `fn(flow)` on every newly captured request. |
+| `api(path, opts)` | Calls Hizn's REST API (e.g. `api('/repeater/send', {method:'POST', body})`). |
+| `storage.get(k)` / `storage.set(k,v)` | Per-plugin persistent key/value. |
+| `banner(msg)` / `switchTo(tabId)` / `esc(s)` | Toast, switch to your tab, HTML-escape. |
+
+Disable or delete the plugin and all its tabs/buttons/hooks are removed
+automatically. `sitemap.js` in this folder is a working sample.
+
+---
+
+## Message plugins
 
 ## Language
 
