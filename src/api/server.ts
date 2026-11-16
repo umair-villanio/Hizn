@@ -10,6 +10,7 @@
 import express from 'express';
 import * as http from 'http';
 import * as path from 'path';
+import { existsSync } from 'fs';
 import { WebSocketServer, WebSocket } from 'ws';
 import { ProxyService } from '../proxy/proxy-service';
 import { AdbService } from '../devices/adb-service';
@@ -429,6 +430,21 @@ export class ApiServer {
             } catch (e: any) {
                 res.status(400).json({ error: e.message });
             }
+        });
+
+        // ---- MCP server info (for the in-app MCP tab's config snippet) ----
+        api.get('/mcp/info', (_req, res) => {
+            // __dirname at runtime is dist/api → the compiled server is dist/mcp/mcp-server.js
+            const serverPath = path.join(__dirname, '..', 'mcp', 'mcp-server.js');
+            res.json({
+                serverPath,
+                exists: existsSync(serverPath),
+                apiUrl: `http://127.0.0.1:${this.opts.port}`,
+                tools: {
+                    readonly: ['hizn_status', 'list_flows', 'get_flow', 'list_devices', 'list_device_apps', 'get_scope', 'get_intercept', 'scan_apk'],
+                    active: ['start_proxy', 'stop_proxy', 'send_request', 'start_intruder', 'stop_intruder', 'set_scope', 'resolve_intercept'],
+                },
+            });
         });
 
         // ---- Plugins (file-backed, Burp-style installable) ----
