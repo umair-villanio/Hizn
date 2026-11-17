@@ -8,7 +8,8 @@
 // tabs, buttons, menu items, hook live traffic, call Hizn's API, and store
 // state — unlike message plugins, which transform a single intercepted message.
 
-const seen = new Map(); // host -> Set("METHOD /path")
+const seen = new Map();       // host -> Set("METHOD /path")
+const collapsed = new Set();  // hosts the user has minimized
 let listEl = null;
 
 // 1) A whole new tab in the left rail.
@@ -21,9 +22,32 @@ hizn.registerTab({
     container.style.overflow = 'auto';
     container.innerHTML =
       '<h3 style="margin:0 0 4px;font-size:13px;color:var(--faint);text-transform:uppercase;letter-spacing:.5px">Site map — unique endpoints seen</h3>' +
-      '<div style="color:var(--faint);font-size:12px;margin-bottom:12px">Grows live as traffic is captured. Added by the <b>Site Map</b> sample plugin.</div>' +
+      '<div style="color:var(--faint);font-size:12px;margin-bottom:10px">Grows live as traffic is captured. Click a domain to minimize it. Added by the <b>Site Map</b> sample plugin.</div>' +
+      '<div style="display:flex;gap:8px;margin-bottom:12px">' +
+        '<button id="xtSmCollapse" class="btn" style="font-size:11px;padding:3px 9px">Minimize all</button>' +
+        '<button id="xtSmExpand" class="btn" style="font-size:11px;padding:3px 9px">Expand all</button>' +
+      '</div>' +
       '<div id="xtSitemapList"></div>';
     listEl = container.querySelector('#xtSitemapList');
+
+    // Toggle a single host by clicking its header (event delegation).
+    listEl.addEventListener('click', function (e) {
+      const row = e.target.closest('[data-host]');
+      if (!row) return;
+      const host = row.getAttribute('data-host');
+      if (collapsed.has(host)) collapsed.delete(host); else collapsed.add(host);
+      draw();
+    });
+
+    container.querySelector('#xtSmCollapse').addEventListener('click', function () {
+      for (const host of seen.keys()) collapsed.add(host);
+      draw();
+    });
+    container.querySelector('#xtSmExpand').addEventListener('click', function () {
+      collapsed.clear();
+      draw();
+    });
+
     draw();
   },
 });
@@ -44,11 +68,18 @@ function draw() {
   }
   let html = '';
   for (const [host, paths] of [...seen.entries()].sort()) {
+    const isCollapsed = collapsed.has(host);
+    const caret = isCollapsed ? '▸' : '▾';
     html += '<div style="margin-bottom:12px">' +
-      '<div style="font-weight:650;color:var(--accent)">' + hizn.esc(host) +
-      ' <span style="color:var(--faint);font-weight:400">(' + paths.size + ')</span></div>' +
-      '<div style="font-family:var(--mono);font-size:12px;color:var(--muted);padding-left:12px;margin-top:3px">' +
-      [...paths].sort().map(p => hizn.esc(p)).join('<br>') + '</div></div>';
+      '<div data-host="' + hizn.esc(host) + '" title="Click to minimize / expand" ' +
+        'style="font-weight:650;color:var(--accent);cursor:pointer;user-select:none">' +
+        '<span style="display:inline-block;width:14px;color:var(--faint)">' + caret + '</span>' +
+        hizn.esc(host) +
+        ' <span style="color:var(--faint);font-weight:400">(' + paths.size + ')</span></div>' +
+      (isCollapsed ? '' :
+        '<div style="font-family:var(--mono);font-size:12px;color:var(--muted);padding-left:26px;margin-top:3px">' +
+        [...paths].sort().map(p => hizn.esc(p)).join('<br>') + '</div>') +
+      '</div>';
   }
   listEl.innerHTML = html;
 }
