@@ -1,8 +1,26 @@
 # Hizn
 
-One-click traffic interception for **Android *and* desktop Firefox**, with optional Burp Suite chaining — built as an original tool on open components. Point a phone (or a Firefox window) at your machine, decrypt its HTTPS, and watch (or mock/rewrite) the traffic. Flip one toggle to forward everything through Burp.
+[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](LICENSE)
+[![Node](https://img.shields.io/badge/node-%E2%89%A520-brightgreen.svg)](https://nodejs.org)
+[![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)](#setup)
 
-> **Authorized testing only.** Use this on devices and apps you own or are explicitly permitted to test.
+One-click traffic interception for **Android *and* desktop Firefox**, with optional Burp Suite chaining — a self-contained, Burp-style interception workbench built on open components. Point a phone (or a Firefox window) at your machine, decrypt its HTTPS, and watch — or mock, replay, and fuzz — the traffic. Flip one toggle to forward everything through Burp.
+
+> **Authorized testing only.** Use this on devices and apps you own or are explicitly permitted to test. You are responsible for complying with all applicable laws.
+
+## Features
+
+- **Live interception** — hold requests/responses, edit headers/body, Forward or Drop.
+- **HTTP history** — every flow streamed live, with a request/response detail pane, Copy as cURL, and HAR export.
+- **Repeater** — send any request to Repeater, edit, and re-fire with status + timing; boxes auto-size to content.
+- **Intruder** — Burp-style fuzzing with `§markers§`, Sniper / Battering-ram attacks, payload types (numbers, brute-force, null) and processing; click any result row to inspect its full request/response.
+- **Match & Replace** — auto-rewrite rules for request/response headers, body, and URL across all traffic.
+- **Target scope** — limit interception to specific hosts, with an in-scope-only history filter.
+- **Decoder** — base64 / URL / hex / HTML / JWT encode-decode with smart auto-detect.
+- **Static APK analyzer** — drag-and-drop (or pull from a connected device over ADB) an `.apk` to extract version, permissions, hardcoded secrets/keys, certificate information + analysis, and manifest analysis — no external service, all local.
+- **Plugins** — Burp-extension-style add-ons in plain JavaScript (no build step). *Message plugins* transform a single intercepted message; *extension plugins* are fully flexible — they add new tabs, inject buttons, hook live traffic, and call Hizn's API. See [`plugins/README.md`](plugins/README.md).
+- **MCP integration** — exposes Hizn's API over the Model Context Protocol (stdio JSON-RPC) so external tooling can drive it programmatically; read-only by default, write tools gated behind an explicit toggle. See [`mcp/README.md`](mcp/README.md).
+- **Desktop app** — Electron shell (`npm run electron`) or headless/browser mode; dark/light theme.
 
 ## How it works
 
@@ -20,6 +38,8 @@ Web UI  ·  live flows, one-click connect, Burp toggle, CA download
 - **Device automation:** [`@devicefarmer/adbkit`](https://github.com/DeviceFarmer/adbkit) — detect device, push CA, set proxy, open reverse tunnels.
 - **CA trust & unpinning:** [`frida-js`](https://github.com/httptoolkit/frida-js) + adapted [frida-interception-and-unpinning](https://github.com/httptoolkit/frida-interception-and-unpinning) scripts (AGPL-3.0) — inject the CA and bypass certificate pinning on modern Android.
 
+The static APK analyzer and MCP bridge use only Node's built-ins and existing dependencies — no extra runtime weight.
+
 ## Prerequisites
 
 - **Node.js ≥ 20** (tested on 26)
@@ -30,10 +50,15 @@ Web UI  ·  live flows, one-click connect, Burp toggle, CA download
 
 ## Setup
 
+```bash
+git clone https://github.com/umair-villanio/hizn.git
+cd hizn
+npm install
+```
+
 ### Desktop app (recommended)
 
 ```bash
-npm install
 npm run electron     # builds the backend, then opens the desktop window
 ```
 
@@ -89,41 +114,68 @@ do it once.
 | **Rooted / emulator** | CA is copied into the system trust store (`/system/etc/security/cacerts`, + APEX path on Android 14+). All apps trust it. |
 | **Non-rooted** | CA is staged at `/sdcard/Download/hizn-ca.crt` for manual install (Settings → Security → Install certificate), **or** use a Frida target to inject it per-app. |
 
+## APK analyzer
+
+Open the **Analyzer** tab, then drag an `.apk` onto it or **pull an installed app**
+from a connected device. Everything is parsed locally (ZIP, binary
+`AndroidManifest.xml`, `resources.arsc`, and the APK signing block) — nothing is
+uploaded. It reports:
+
+- **App info** — package, versionName / versionCode, SDK targets.
+- **Permissions** — every requested permission, dangerous ones flagged.
+- **Secrets** — hardcoded API keys/tokens (Google, AWS, Firebase, Stripe, JWTs, …) scanned across code, resources, and string pools.
+- **Certificate** — signer DN, validity, fingerprints, signature scheme (v1/v2/v3), with an analysis of weak/notable properties.
+- **Manifest** — components, exported surfaces, and other notable manifest entries.
+
+## Plugins & integration
+
+- **`plugins/`** — drop-in JavaScript extensions. `jwt-decoder.js` and `sitemap.js` ship as samples; see [`plugins/README.md`](plugins/README.md) for the message- and extension-plugin APIs.
+- **`mcp/`** — Model Context Protocol server exposing Hizn's REST API as tools over stdio; see [`mcp/README.md`](mcp/README.md) for registration and the tool table.
+
 ## Project layout
 
 ```
 src/
-  proxy/proxy-service.ts   mockttp engine, CA, Burp upstream, flow events
-  devices/adb-service.ts   ADB: detect, proxy, push CA, reverse, frida tunnel
-  frida/frida-service.ts   CA injection + unpinning payload + injection
-  orchestrator.ts          the one-click flow (ties it all together)
-  api/server.ts            REST + WebSocket bridge to the UI
-  index.ts                 entry point (headless server)
-electron/main.js           desktop shell: boots the server + opens the window
-electron/preload.js        exposes a read-only `window.hizn` marker
-scripts/frida/             adapted unpinning hook scripts (AGPL-3.0)
-ui/index.html              single-file web UI (no build step)
+  proxy/proxy-service.ts       mockttp engine, CA, Burp upstream, flow events
+  devices/adb-service.ts       ADB: detect, proxy, push CA, reverse, frida tunnel, pull APKs
+  frida/frida-service.ts       CA injection + unpinning payload + injection
+  intruder/intruder-service.ts §marker fuzzing engine (Sniper / Battering-ram)
+  analyzer/analyzer-service.ts static APK analysis (ZIP / AXML / arsc / signing block)
+  mcp/mcp-server.ts            Model Context Protocol bridge (stdio JSON-RPC)
+  orchestrator.ts              the one-click flow (ties it all together)
+  api/server.ts                REST + WebSocket bridge to the UI
+  index.ts                     entry point (headless server)
+electron/main.js               desktop shell: boots the server + opens the window
+electron/preload.js            exposes a read-only `window.hizn` marker
+scripts/frida/                 adapted unpinning hook scripts (AGPL-3.0)
+plugins/                       drop-in JS plugins (message + extension)
+ui/index.html                  single-file web UI (no build step)
 ```
 
-## Roadmap / extension points
+## Roadmap
 
-- ~~Burp-style interception~~ ✅ done — hold requests/responses, edit headers/body, Forward or Drop (Intercept card / header chip).
-- ~~Plugins~~ ✅ done — Burp-extension-style tabs in the intercept panel; ships a JWT decoder, plus add custom `transform(ctx)` plugins.
-- ~~Repeater~~ ✅ done — "→ Repeater" from HTTP history or a held request; edit and re-send, with status + timing.
-- ~~Match & Replace~~ ✅ done — auto-rewrite rules (request/response headers, body, URL) applied to all traffic.
-- ~~Connected-device status~~ ✅ done — live "connected" badge + one-click Disconnect.
-- ~~Target scope~~ ✅ done — limit intercept to specific hosts; "in-scope only" history filter.
-- ~~Save / export~~ ✅ done — request/response bodies in the detail pane; Copy as cURL; Export HTTP history as .har.
-- ~~Server-side history + sessions~~ ✅ done — history survives UI reconnects; Save/Load a capture session as JSON.
-- ~~Decoder~~ ✅ done — base64 / URL / hex / HTML / JWT encode-decode, with smart auto-detect.
-- ~~Dark / light theme~~ ✅ done (header toggle, follows system by default).
-- ~~Auto-connect Genymotion~~ ✅ done (detected VMs connect automatically).
-- ~~Auto-provision frida-server~~ ✅ done (download + push + start by ABI).
-- ~~Electron shell~~ ✅ done (`npm run electron`; `npm run dist` builds installers).
-- **Server-side plugins** — today plugins run in the UI; add a backend plugin host for traffic rewriting.
+Done:
+
+- ✅ Burp-style interception — hold, edit, Forward/Drop.
+- ✅ Repeater, Intruder, Match & Replace, Target scope, Decoder.
+- ✅ Static APK analyzer (secrets, permissions, certificate, manifest).
+- ✅ Plugins — message + fully-flexible extension plugins (tabs, buttons, live hooks).
+- ✅ MCP integration tab with copy-paste configs.
+- ✅ Save/export — Copy as cURL, HAR export, server-side history + JSON sessions.
+- ✅ Dark/light theme, auto-connect Genymotion, auto-provision frida-server, Electron shell + installers.
+
+Planned:
+
+- **Server-side plugins** — a backend plugin host for inline traffic rewriting (today extension plugins run in the UI).
 - **WebSocket interception** — pause/edit WS frames (today they pass through).
 - **Companion Android app** — an "Activate" intent for one-tap device-side setup.
 
+## Contributing
+
+Issues and pull requests are welcome. Keep plugins self-contained (no npm deps,
+no network calls) and target the `dev` branch. See [`plugins/README.md`](plugins/README.md)
+for the plugin format.
+
 ## License
 
-AGPL-3.0-only. Includes adapted AGPL-3.0 scripts from httptoolkit/frida-interception-and-unpinning. If you distribute a modified build, you must share your source.
+AGPL-3.0-only. Includes adapted AGPL-3.0 scripts from httptoolkit/frida-interception-and-unpinning. If you distribute a modified build, you must share your source. See [`NOTICE.md`](NOTICE.md) for third-party attributions.
