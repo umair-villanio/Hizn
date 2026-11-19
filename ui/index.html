@@ -240,6 +240,33 @@
 
   /* ---------- Repeater ---------- */
   #view-repeater { overflow: auto; }
+  .rp-modebar { display: flex; gap: 4px; padding: 10px 18px 0; }
+  .rp-mode { padding: 7px 16px; font-size: 13px; font-weight: 650; color: var(--faint); background: var(--panel-2);
+    border: 1px solid var(--border); border-radius: 8px; cursor: pointer; }
+  .rp-mode.active { color: var(--text); background: var(--raise); border-color: var(--accent); }
+  .ws-state { font-family: var(--mono); font-size: 12px; padding: 3px 9px; border-radius: 6px;
+    background: var(--panel-2); border: 1px solid var(--border); color: var(--faint); white-space: nowrap; }
+  .ws-state.open { color: var(--accent); border-color: var(--accent); }
+  .ws-state.connecting { color: var(--amber); border-color: var(--amber); }
+  .ws-state.error { color: var(--red); border-color: var(--red); }
+  .ws-log { margin: 10px 18px 18px; border: 1px solid var(--border-soft); border-radius: 10px; overflow: hidden;
+    font-family: var(--mono); font-size: 12px; }
+  .ws-log:empty::after { content: 'No frames yet — connect and send one.'; display: block; padding: 18px; color: var(--faint); font-family: inherit; }
+  .ws-frame { display: grid; grid-template-columns: 74px 1fr auto; gap: 10px; align-items: start;
+    padding: 7px 12px; border-bottom: 1px solid var(--border-soft); }
+  .ws-frame:last-child { border-bottom: none; }
+  .ws-frame .dir { font-weight: 700; white-space: nowrap; }
+  .ws-frame.out .dir { color: var(--blue); }
+  .ws-frame.in .dir { color: var(--accent); }
+  .ws-frame.sys .dir { color: var(--faint); }
+  .ws-frame .txt { white-space: pre-wrap; word-break: break-all; color: var(--text); }
+  .ws-frame .meta { color: var(--faint); font-size: 11px; white-space: nowrap; }
+  /* WebSocket frames inside the history detail pane. */
+  .ws-dframe { display: flex; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--border-soft); font-family: var(--mono); font-size: 11.5px; }
+  .ws-dframe .dir { font-weight: 700; white-space: nowrap; }
+  .ws-dframe.out .dir { color: var(--blue); }
+  .ws-dframe.in .dir { color: var(--accent); }
+  .ws-dframe .txt { white-space: pre-wrap; word-break: break-all; }
   .rp-req, .rp-res { display: flex; flex-direction: column; }
   .rp-res { border-top: 2px solid var(--border); }
   .rp-line { display: flex; gap: 8px; align-items: center; padding: 12px 18px 0; }
@@ -601,6 +628,11 @@
 
     <!-- Repeater view -->
     <section id="view-repeater" class="view">
+      <div class="rp-modebar">
+        <button id="rpModeHttp" class="rp-mode active">HTTP</button>
+        <button id="rpModeWs" class="rp-mode">WebSocket</button>
+      </div>
+      <div id="rpHttp">
       <div class="rp-req">
         <div class="rp-line">
           <select id="rpMethod" style="width:auto">
@@ -631,6 +663,35 @@
             <label class="ip-lbl">Response body</label>
             <textarea id="rpResBody" class="ip-text" readonly spellcheck="false"></textarea>
           </div>
+        </div>
+      </div>
+      </div><!-- /#rpHttp -->
+
+      <!-- WebSocket repeater: open a live socket and replay frames -->
+      <div id="rpWs" style="display:none">
+        <div class="rp-req">
+          <div class="rp-line">
+            <input id="wsUrl" type="text" placeholder="wss://example.com/socket" />
+            <button id="wsConnect" class="btn-primary" style="width:auto;padding:10px 20px">Connect</button>
+            <button id="wsDisconnect" class="btn ghost" style="width:auto;padding:10px 16px" disabled>Disconnect</button>
+            <span id="wsState" class="ws-state">closed</span>
+          </div>
+          <div class="ip-col">
+            <label class="ip-lbl">Connection headers <span class="ip-hint">(optional, one per line — e.g. for auth / cookies)</span></label>
+            <textarea id="wsHeaders" class="ip-text" spellcheck="false" style="min-height:52px" placeholder="Authorization: Bearer …"></textarea>
+          </div>
+          <div class="ip-col" style="margin-top:10px">
+            <label class="ip-lbl">Frame to send</label>
+            <textarea id="wsFrame" class="ip-text" spellcheck="false" placeholder='{"type":"ping"}'></textarea>
+          </div>
+          <div class="rp-line" style="margin-top:10px">
+            <button id="wsSend" class="btn-primary" style="width:auto;padding:9px 20px" disabled>Send frame ▶</button>
+            <button id="wsClearLog" class="btn ghost" style="width:auto;padding:9px 14px">Clear log</button>
+          </div>
+        </div>
+        <div class="rp-res">
+          <div class="rp-res-head"><span class="rp-status">Frames</span><span id="wsMeta" class="ip-hint"></span></div>
+          <div id="wsLog" class="ws-log"></div>
         </div>
       </div>
     </section>
@@ -974,13 +1035,18 @@ function renderFlows() {
   $('tabHistoryCount').textContent = flows.size;
   $('tabHistoryCount').classList.toggle('show', flows.size > 0);
   $('emptyFlows').style.display = flows.size ? 'none' : 'block';
-  $('flowBody').innerHTML = list.slice(-600).map(f => `
+  $('flowBody').innerHTML = list.slice(-600).map(f => {
+    const nFrames = Array.isArray(f.wsMessages) ? f.wsMessages.length : 0;
+    const sizeCell = f.ws ? `⇅ ${nFrames}` : fmtSize(f.responseBodySize);
+    const codeCell = f.ws ? (f.wsState === 'open' ? '101' : f.wsState === 'closed' ? '✕' : '…') : (f.statusCode || '·');
+    return `
     <tr data-id="${f.id}" class="${f.id === selectedId ? 'sel' : ''}">
       <td class="method m-${f.method}">${f.method}</td>
-      <td class="status ${sCls(f.statusCode)}">${f.statusCode || '·'}</td>
+      <td class="status ${f.ws ? '' : sCls(f.statusCode)}">${codeCell}</td>
       <td class="url"><span class="host">${f.host || ''}</span><span class="path">${f.path || ''}</span></td>
-      <td class="size">${fmtSize(f.responseBodySize)}</td>
-    </tr>`).join('');
+      <td class="size">${sizeCell}</td>
+    </tr>`;
+  }).join('');
 }
 $('flowBody').addEventListener('click', (e) => {
   const tr = e.target.closest('tr'); if (!tr) return;
@@ -1002,8 +1068,28 @@ function bodyBlock(title, text, size) {
   if (!text) return `<div class="section"><h3>${title}</h3><div class="placeholder">${size ? fmtSize(size) + ' (not captured)' : 'none'}</div></div>`;
   return `<div class="section"><h3>${title} <span style="color:var(--faint)">${fmtSize(size) || ''}</span></h3><pre style="margin:0;white-space:pre-wrap;word-break:break-all;font-family:var(--mono);font-size:12px;color:var(--text)">${esc(text)}</pre></div>`;
 }
+function wsFrameText(mm) {
+  if (mm.isBinary) return `[binary ${fmtSize(mm.size) || mm.size + ' B'}] ` + esc((mm.text || '').slice(0, 2000));
+  return esc(mm.text || '') + (mm.truncated ? ' …(truncated)' : '');
+}
 function showDetail(f) {
   if (!f) return;
+  if (f.ws) {
+    const frames = Array.isArray(f.wsMessages) ? f.wsMessages : [];
+    const log = frames.length
+      ? frames.map(mm => {
+          const out = mm.dir === 'outgoing';
+          return `<div class="ws-dframe ${out ? 'out' : 'in'}"><span class="dir">${out ? '⬆ send' : '⬇ recv'}</span><span class="txt">${wsFrameText(mm)}</span></div>`;
+        }).join('')
+      : '<div class="placeholder">No frames captured yet.</div>';
+    $('detailBody').innerHTML = `
+      <div class="section"><h3>${f.method} · ${f.wsState || ''}${f.wsCloseCode != null ? ' (' + f.wsCloseCode + ')' : ''}</h3><div class="url-full">${esc(f.url)}</div></div>
+      <div class="section"><h3>Handshake request headers</h3>${headersKV(f.requestHeaders)}</div>
+      <div class="section"><h3>Handshake response headers</h3>${headersKV(f.responseHeaders)}</div>
+      <div class="section"><h3>Frames <span style="color:var(--faint)">${frames.length}</span></h3>${log}</div>`;
+    $('detailPane').classList.add('open');
+    return;
+  }
   $('detailBody').innerHTML = `
     <div class="section"><h3>${f.method} ${f.statusCode ? '· ' + f.statusCode : ''}</h3><div class="url-full">${esc(f.url)}</div></div>
     <div class="section"><h3>Request headers</h3>${headersKV(f.requestHeaders)}</div>
@@ -1087,8 +1173,20 @@ function closeDetail() { $('detailPane').classList.remove('open'); selectedId = 
 $('closeDetail').addEventListener('click', closeDetail);
 
 /* ================= Repeater ================= */
+function rpSetMode(mode) {
+  const ws = mode === 'ws';
+  $('rpHttp').style.display = ws ? 'none' : '';
+  $('rpWs').style.display = ws ? '' : 'none';
+  $('rpModeHttp').classList.toggle('active', !ws);
+  $('rpModeWs').classList.toggle('active', ws);
+}
+$('rpModeHttp').addEventListener('click', () => rpSetMode('http'));
+$('rpModeWs').addEventListener('click', () => rpSetMode('ws'));
+
 function sendToRepeater(f) {
   if (!f) return;
+  if (f.ws) { sendToWsRepeater(f); return; }
+  rpSetMode('http');
   $('rpMethod').value = f.method || 'GET';
   $('rpUrl').value = f.url || '';
   $('rpHeaders').value = headersToText(f.requestHeaders);
@@ -1126,6 +1224,80 @@ $('rpSend').addEventListener('click', async () => {
     itAutosize($('rpResHeaders')); itAutosize($('rpResBody'));
   }
 });
+
+/* ---- WebSocket Repeater (live frame replay) ---- */
+let wsSession = null;      // { id } of the active backend WS repeater session
+function wsSetState(state) {
+  const el = $('wsState');
+  el.textContent = state;
+  el.className = 'ws-state' + (state === 'open' ? ' open' : state === 'connecting' ? ' connecting' : state === 'error' ? ' error' : '');
+  const open = state === 'open';
+  $('wsSend').disabled = !open;
+  $('wsConnect').disabled = open || state === 'connecting';
+  $('wsDisconnect').disabled = !open && state !== 'connecting';
+}
+function wsAppendLog(cls, dir, text, meta) {
+  const row = document.createElement('div');
+  row.className = 'ws-frame ' + cls;
+  row.innerHTML = `<span class="dir">${dir}</span><span class="txt">${esc(text)}</span><span class="meta">${meta || ''}</span>`;
+  const log = $('wsLog');
+  log.appendChild(row);
+  log.scrollTop = log.scrollHeight;
+}
+function wsOnOpen(m) {
+  if (!wsSession || m.id !== wsSession.id) return;
+  wsSetState('open');
+  wsAppendLog('sys', '• open', m.url || '', new Date(m.at || Date.now()).toLocaleTimeString());
+}
+function wsOnFrame(m) {
+  if (!wsSession || m.id !== wsSession.id) return;
+  const out = m.dir === 'outgoing';
+  const text = m.isBinary ? `[binary ${fmtSize(m.size) || m.size + ' B'}] ${(m.text || '').slice(0, 2000)}` : (m.text || '');
+  wsAppendLog(out ? 'out' : 'in', out ? '⬆ send' : '⬇ recv', text, new Date(m.at || Date.now()).toLocaleTimeString());
+}
+function wsOnClose(m) {
+  if (!wsSession || m.id !== wsSession.id) return;
+  wsSetState('closed');
+  wsAppendLog('sys', '• close', `code ${m.code}${m.reason ? ' · ' + m.reason : ''}`, new Date(m.at || Date.now()).toLocaleTimeString());
+  wsSession = null;
+}
+function wsOnError(m) {
+  if (!wsSession || m.id !== wsSession.id) return;
+  wsAppendLog('sys', '• error', m.message || 'error', new Date(m.at || Date.now()).toLocaleTimeString());
+  wsSetState('error');
+}
+$('wsConnect').addEventListener('click', async () => {
+  const url = $('wsUrl').value.trim();
+  if (!/^wss?:\/\//i.test(url)) return banner('Enter a ws:// or wss:// URL.');
+  wsSetState('connecting');
+  try {
+    const r = await api('/repeater/ws/open', { method: 'POST', body: {
+      url, headers: textToHeaders($('wsHeaders').value),
+      insecure: true,
+    }});
+    wsSession = { id: r.id };
+    wsAppendLog('sys', '• connecting', url, '');
+  } catch (e) { wsSetState('error'); banner('Connect failed: ' + e.message); }
+});
+$('wsDisconnect').addEventListener('click', async () => {
+  if (!wsSession) { wsSetState('closed'); return; }
+  await api('/repeater/ws/close', { method: 'POST', body: { id: wsSession.id } }).catch(() => {});
+});
+$('wsSend').addEventListener('click', async () => {
+  if (!wsSession) return banner('Not connected.');
+  const data = $('wsFrame').value;
+  try { await api('/repeater/ws/send', { method: 'POST', body: { id: wsSession.id, data } }); }
+  catch (e) { banner('Send failed: ' + e.message); }
+});
+$('wsClearLog').addEventListener('click', () => { $('wsLog').innerHTML = ''; });
+function sendToWsRepeater(f) {
+  rpSetMode('ws');
+  $('wsUrl').value = f.url || '';
+  $('wsHeaders').value = headersToText(f.requestHeaders);
+  $('wsLog').innerHTML = '';
+  switchView('repeater');
+}
+wsSetState('closed');
 
 /* ================= Intruder ================= */
 let itLastField = null;          // last focused §-markable field
@@ -1897,6 +2069,19 @@ function connectWs() {
     else if (m.type === 'intruder-start') itOnStart(m.info);
     else if (m.type === 'intruder-row') itOnRow(m.row);
     else if (m.type === 'intruder-done') itOnDone(m.summary);
+    else if (m.type === 'ws-message') {
+      const f = flows.get(m.msg.id);
+      if (f) {
+        if (!Array.isArray(f.wsMessages)) f.wsMessages = [];
+        f.wsMessages.push(m.msg);
+        renderFlows();
+        if (f.id === selectedId) showDetail(f);
+      }
+    }
+    else if (m.type === 'ws-repeater-open') wsOnOpen(m);
+    else if (m.type === 'ws-repeater-message') wsOnFrame(m);
+    else if (m.type === 'ws-repeater-close') wsOnClose(m);
+    else if (m.type === 'ws-repeater-error') wsOnError(m);
   };
   ws.onclose = () => setTimeout(connectWs, 1500);
 }

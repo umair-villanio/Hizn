@@ -49,6 +49,24 @@ export interface Flow {
     startedAt: number;
     completedAt?: number;
     error?: string;
+    /** WebSocket flow marker + state (set only for ws:// / wss:// flows). */
+    ws?: boolean;
+    wsState?: 'connecting' | 'open' | 'closed';
+    wsCloseCode?: number;
+}
+
+/** A single WebSocket frame, as relayed to the UI history. */
+export interface WsMessage {
+    /** Owning flow id (the websocket stream id). */
+    id: string;
+    /** From the app's point of view: outgoing = client→server, incoming = server→client. */
+    dir: 'outgoing' | 'incoming';
+    /** Decoded text (capped). Empty for binary frames with no printable text. */
+    text: string;
+    isBinary: boolean;
+    size: number;
+    truncated: boolean;
+    at: number;
 }
 
 /** Burp-style interception: hold traffic until the user forwards or drops it. */
@@ -128,6 +146,9 @@ const DEFAULT_PROXY_PORT = 8000;
 
 /** Cap body text sent to the UI so a huge download can't flood the socket. */
 const MAX_INTERCEPT_BODY = 512 * 1024;
+
+/** Cap each WebSocket frame relayed to the UI (frames can be very chatty). */
+const MAX_WS_MSG = 64 * 1024;
 
 export class ProxyService extends EventEmitter {
     private server?: mockttp.Mockttp;
@@ -473,7 +494,8 @@ export class ProxyService extends EventEmitter {
         }
 
         await this.server.forAnyRequest().thenPassThrough(passThroughOptions);
-        // WebSockets can't be paused/edited the same way; forward them plainly.
+        // WebSockets are forwarded plainly, but every frame is still observed
+        // and streamed to the UI history (see the ws* subscriptions in wireEvents).
         await this.server.forAnyWebSocket().thenPassThrough(
             this.upstream.enabled
                 ? { proxyConfig: { proxyUrl: `http://${this.upstream.host}:${this.upstream.port}` } }
@@ -598,6 +620,13 @@ export class ProxyService extends EventEmitter {
         return Object.keys(mod).length ? mod : undefined;
     }
 
+    /** Decode a WebSocket frame payload to capped text for the UI. */
+    private capWsContent(content: Uint8Array): { text: string; size: number; truncated: boolean } {
+        const size = content.byteLength;
+        const slice = size > MAX_WS_MSG ? content.subarray(0, MAX_WS_MSG) : content;
+        return { text: Buffer.from(slice).toString('utf8'), size, truncated: size > MAX_WS_MSG };
+    }
+
     /** Decode a body buffer to capped text for the UI / exports. */
     private capBody(buffer?: Buffer): string | undefined {
         if (!buffer || !buffer.length) return undefined;
@@ -638,6 +667,68 @@ export class ProxyService extends EventEmitter {
         server.on('abort', (req) => {
             this.flowHosts.delete(req.id);
             this.emit('flow-update', { id: req.id, error: 'aborted', completedAt: Date.now() });
+        });
+
+        // ---- WebSocket history: upgrade, accept, every frame, and close. ----
+        server.on('websocket-request', (req) => {
+            let host = req.headers['host'] as string | undefined;
+            let path = (req as any).path as string | undefined;
+            if (!host || !path) {
+                try { const u = new URL(req.url); host = host ?? u.host; path = path ?? (u.pathname + u.search); }
+                catch { /* keep what we have */ }
+            }
+            const secure = req.url.startsWith('wss:');
+            const flow: Flow = {
+                id: req.id,
+                method: secure ? 'WSS' : 'WS',
+                protocol: secure ? 'wss' : 'ws',
+                host: host ?? '',
+                path: path ?? '',
+                url: req.url,
+                requestHeaders: req.headers,
+                startedAt: Date.now(),
+                ws: true,
+                wsState: 'connecting',
+            };
+            this.emit('flow', flow);
+        });
+
+        server.on('websocket-accepted', (res) => {
+            this.emit('flow-update', {
+                id: res.id,
+                statusCode: res.statusCode,
+                statusMessage: res.statusMessage,
+                responseHeaders: res.headers,
+                ws: true,
+                wsState: 'open',
+            });
+        });
+
+        // mockttp direction: 'received' = received from the client (app → server),
+        // 'sent' = sent by mockttp to the client (server → app).
+        server.on('websocket-message-received', (msg) => {
+            const c = this.capWsContent(msg.content);
+            this.emit('ws-message', {
+                id: msg.streamId, dir: 'outgoing',
+                text: c.text, isBinary: msg.isBinary, size: c.size, truncated: c.truncated,
+                at: Date.now(),
+            } as WsMessage);
+        });
+        server.on('websocket-message-sent', (msg) => {
+            const c = this.capWsContent(msg.content);
+            this.emit('ws-message', {
+                id: msg.streamId, dir: 'incoming',
+                text: c.text, isBinary: msg.isBinary, size: c.size, truncated: c.truncated,
+                at: Date.now(),
+            } as WsMessage);
+        });
+
+        server.on('websocket-close', (close) => {
+            this.flowHosts.delete(close.streamId);
+            this.emit('flow-update', {
+                id: close.streamId, ws: true, wsState: 'closed',
+                wsCloseCode: close.closeCode, completedAt: Date.now(),
+            });
         });
     }
 }

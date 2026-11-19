@@ -17,6 +17,7 @@ import { AdbService } from '../devices/adb-service';
 import { FridaService } from '../frida/frida-service';
 import { DesktopService } from '../desktop/desktop-service';
 import { RepeaterService } from '../repeater/repeater-service';
+import { WsRepeaterService } from '../repeater/ws-repeater-service';
 import { IntruderService } from '../intruder/intruder-service';
 import { AnalyzerService } from '../analyzer/analyzer-service';
 import { PluginService } from '../plugins/plugin-service';
@@ -38,6 +39,7 @@ export class ApiServer {
     private frida = new FridaService(this.adb);
     private desktop = new DesktopService();
     private repeater = new RepeaterService();
+    private wsRepeater = new WsRepeaterService();
     private intruder = new IntruderService();
     private analyzer = new AnalyzerService();
     private plugins = new PluginService();
@@ -46,6 +48,8 @@ export class ApiServer {
     /** Server-side flow log so history survives UI reconnects. */
     private flows = new Map<string, any>();
     private static readonly MAX_FLOWS = 5000;
+    /** Per-flow cap on stored WebSocket frames (newest kept). */
+    private static readonly MAX_WS_MESSAGES = 2000;
     private orchestrator = new Orchestrator(
         this.proxy,
         this.adb,
@@ -57,6 +61,7 @@ export class ApiServer {
         this.app.use(express.json());
         this.wireProxyEvents();
         this.wireIntruderEvents();
+        this.wireWsRepeaterEvents();
         this.wireWebsocket();
         this.routes();
         this.app.use(express.static(opts.uiDir));
@@ -96,6 +101,17 @@ export class ApiServer {
             if (existing) Object.assign(existing, update);
             this.broadcast({ type: 'flow-update', update });
         });
+        // WebSocket frames: store on the owning flow (capped) so history
+        // survives a UI reconnect, then stream live to every client.
+        this.proxy.on('ws-message', (msg: any) => {
+            const flow = this.flows.get(msg.id);
+            if (flow) {
+                if (!Array.isArray(flow.wsMessages)) flow.wsMessages = [];
+                flow.wsMessages.push(msg);
+                if (flow.wsMessages.length > ApiServer.MAX_WS_MESSAGES) flow.wsMessages.shift();
+            }
+            this.broadcast({ type: 'ws-message', msg });
+        });
         this.proxy.on('status', (status) => this.broadcast({ type: 'proxy-status', status }));
         this.proxy.on('upstream-changed', (upstream) => this.broadcast({ type: 'upstream', upstream }));
         // Burp-style interception.
@@ -109,6 +125,13 @@ export class ApiServer {
         this.intruder.on('start', (info) => this.broadcast({ type: 'intruder-start', info }));
         this.intruder.on('row', (row) => this.broadcast({ type: 'intruder-row', row }));
         this.intruder.on('done', (summary) => this.broadcast({ type: 'intruder-done', summary }));
+    }
+
+    private wireWsRepeaterEvents(): void {
+        this.wsRepeater.on('open', (e) => this.broadcast({ type: 'ws-repeater-open', ...e }));
+        this.wsRepeater.on('message', (e) => this.broadcast({ type: 'ws-repeater-message', ...e }));
+        this.wsRepeater.on('close', (e) => this.broadcast({ type: 'ws-repeater-close', ...e }));
+        this.wsRepeater.on('error', (e) => this.broadcast({ type: 'ws-repeater-error', ...e }));
     }
 
     private wireWebsocket(): void {
@@ -387,6 +410,32 @@ export class ApiServer {
             } catch (e: any) {
                 res.status(400).json({ error: e.message });
             }
+        });
+
+        // ---- WebSocket Repeater (live frame replay) ----
+        api.post('/repeater/ws/open', (req, res) => {
+            try {
+                const { id } = this.wsRepeater.open({
+                    url: String(req.body?.url ?? ''),
+                    headers: req.body?.headers,
+                    insecure: !!req.body?.insecure,
+                });
+                res.json({ ok: true, id });
+            } catch (e: any) {
+                res.status(400).json({ error: e.message });
+            }
+        });
+        api.post('/repeater/ws/send', (req, res) => {
+            try {
+                this.wsRepeater.send(String(req.body?.id ?? ''), String(req.body?.data ?? ''), !!req.body?.isBinary);
+                res.json({ ok: true });
+            } catch (e: any) {
+                res.status(400).json({ error: e.message });
+            }
+        });
+        api.post('/repeater/ws/close', (req, res) => {
+            this.wsRepeater.close(String(req.body?.id ?? ''));
+            res.json({ ok: true });
         });
 
         // ---- Static APK analyzer (upload the .apk as the raw body) ----
