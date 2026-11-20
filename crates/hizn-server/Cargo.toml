@@ -1,0 +1,25 @@
+[package]
+name = "hizn-server"
+description = "Hizn backend: REST + WebSocket bridge serving the Hizn web UI."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+name = "hizn_server"
+path = "src/lib.rs"
+
+[[bin]]
+name = "hizn"
+path = "src/main.rs"
+
+[dependencies]
+axum.workspace = true
+tokio.workspace = true
+tower-http.workspace = true
+futures-util.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+indexmap.workspace = true

@@ -1,0 +1,24 @@
+[workspace]
+resolver = "3"
+members = ["crates/hizn-server"]
+
+[workspace.package]
+version = "0.2.0"
+edition = "2024"
+license = "AGPL-3.0-only"
+authors = ["Umair Hussain"]
+repository = "https://github.com/umair-villanio/Hizn"
+
+[workspace.dependencies]
+axum = { version = "0.8", features = ["ws"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync"] }
+tower-http = { version = "0.6", features = ["fs"] }
+futures-util = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+indexmap = { version = "2", features = ["serde"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
