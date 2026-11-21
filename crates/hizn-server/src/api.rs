@@ -25,9 +25,6 @@ pub const PENDING: &[(&str, &str, u8)] = &[
     ("GET", "/desktop/info", 5),
     ("POST", "/desktop/import-ca", 5),
     ("POST", "/desktop/firefox", 5),
-    ("POST", "/intruder/start", 5),
-    ("POST", "/intruder/stop", 5),
-    ("POST", "/repeater/send", 5),
     ("POST", "/repeater/ws/open", 5),
     ("POST", "/repeater/ws/send", 5),
     ("POST", "/repeater/ws/close", 5),
@@ -63,6 +60,9 @@ pub const PORTED: &[(&str, &str)] = &[
     ("POST", "/connect"),
     ("POST", "/disconnect"),
     ("POST", "/connect/genymotion"),
+    ("POST", "/repeater/send"),
+    ("POST", "/intruder/start"),
+    ("POST", "/intruder/stop"),
 ];
 
 pub fn router() -> Router<AppState> {
@@ -85,6 +85,9 @@ pub fn router() -> Router<AppState> {
     by_path.insert("/connect", post(connect));
     by_path.insert("/disconnect", post(disconnect));
     by_path.insert("/connect/genymotion", post(connect_genymotion));
+    by_path.insert("/repeater/send", post(repeater_send));
+    by_path.insert("/intruder/start", post(intruder_start));
+    by_path.insert("/intruder/stop", post(intruder_stop));
 
     for &(method, path, phase) in PENDING {
         let filter = match method {
@@ -284,6 +287,79 @@ async fn set_scope(State(state): State<AppState>, JsonBody(body): JsonBody) -> J
             .set_scope(body.get("enabled"), body.get("hosts"))
             .to_json(),
     )
+}
+
+// ----------------------------------------------------- repeater / intruder
+
+async fn repeater_send(State(state): State<AppState>, JsonBody(body): JsonBody) -> Response {
+    // `url` is required; an invalid shape is a 400, as Node's route threw.
+    match serde_json::from_value::<hizn_tools::RepeaterRequest>(body) {
+        Ok(req) => Json(state.repeater.send(req).await).into_response(),
+        Err(e) => error(StatusCode::BAD_REQUEST, e.to_string()),
+    }
+}
+
+/// Normalize payloads like Node: an array → `String(x)` each; a string → split
+/// on `\n` with a trailing `\r` trimmed; anything else → empty.
+fn norm_payloads(v: Option<&Value>) -> Vec<String> {
+    match v {
+        Some(Value::Array(list)) => list.iter().map(hizn_proxy::js::string).collect(),
+        Some(Value::String(s)) => s
+            .split('\n')
+            .map(|l| l.strip_suffix('\r').unwrap_or(l).to_owned())
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+async fn intruder_start(State(state): State<AppState>, JsonBody(body): JsonBody) -> Response {
+    if state.intruder.is_running() {
+        return error(StatusCode::CONFLICT, "An attack is already running");
+    }
+    let template = hizn_tools::Template {
+        method: body
+            .get("method")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        url: body
+            .get("url")
+            .map(hizn_proxy::js::string)
+            .unwrap_or_default(),
+        headers: body.get("headers").cloned(),
+        body: body.get("body").and_then(Value::as_str).map(str::to_owned),
+        insecure: js_truthy(body.get("insecure")),
+    };
+    let payloads = norm_payloads(body.get("payloads"));
+    let attack = hizn_tools::AttackType::parse(body.get("attackType").and_then(Value::as_str));
+    let positions = hizn_tools::count_positions(&template);
+    if template.url.is_empty() {
+        return error(StatusCode::BAD_REQUEST, "A URL is required");
+    }
+    if positions == 0 {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "No payload positions — wrap a value in § markers, e.g. §FUZZ§",
+        );
+    }
+    if payloads.is_empty() {
+        return error(StatusCode::BAD_REQUEST, "No payloads provided");
+    }
+    // Fire-and-forget: progress streams over the WebSocket.
+    let url_encode = js_truthy(body.get("urlEncode"));
+    let intruder = state.intruder.clone();
+    let sink = state.intruder_sink.clone();
+    tokio::spawn(async move {
+        intruder
+            .run(template, attack, payloads, url_encode, &sink)
+            .await;
+    });
+    Json(json!({ "ok": true, "positions": positions, "attackType": attack.as_str() }))
+        .into_response()
+}
+
+async fn intruder_stop(State(state): State<AppState>) -> Json<Value> {
+    state.intruder.stop();
+    Json(json!({ "ok": true }))
 }
 
 // ----------------------------------------------------- devices / one-click

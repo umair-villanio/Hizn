@@ -333,6 +333,9 @@ const KNOWN = {
 };
 KNOWN.wss = KNOWN.ws;
 KNOWN['h2-only'] = [[/^origin: .*\["Connection","keep-alive"\]/, 'Node adds "Connection: keep-alive" when converting HTTP/2 to HTTP/1.1; Rust omits it, since a connection header would break HTTP/2-capable origins']];
+// reqwest/hyper exposes only the canonical status reason, not a server's
+// custom HTTP reason phrase (the status code is identical).
+KNOWN['rep-headers'] = [[/statusMessage/, 'reqwest reports the canonical status reason, not a custom HTTP reason phrase (status code identical)']];
 // Error replies: Node sends no headers and closes; Rust adds content-length.
 for (const k of ['refused', 'dns-fail', 'tls-untrusted-origin', 'loop']) {
   (KNOWN[k] ||= []).push([/^client\.headers/, 'error reply framing: Node is close-delimited, Rust sends content-length (same body)']);
@@ -647,6 +650,67 @@ async function main() {
     }
     record('ws-deflate', run.node, run.rust);
     deflateServer.close();
+  }
+
+  // Repeater + Intruder (direct to the test origin; no proxy involved).
+  if (!ONLY || ONLY.has('tools') || ONLY.has('phase5')) {
+    const H2 = `http://127.0.0.1:${httpPort}`;
+    const normResp = (r) => {
+      const body = r.body || {};
+      const h = body.headers || {};
+      // Drop volatile/transport headers that legitimately vary.
+      const keep = {};
+      for (const [k, v] of Object.entries(h)) if (!['date', 'connection', 'keep-alive', 'transfer-encoding'].includes(k)) keep[k] = v;
+      return { status: r.status, statusCode: body.statusCode, statusMessage: body.statusMessage, headers: keep, body: body.body, bodySize: body.bodySize, hasError: !!body.error };
+    };
+    const repeater = [
+      ['rep-get', { url: `${H2}/plain` }],
+      ['rep-post', { method: 'POST', url: `${H2}/echo`, headers: { 'Content-Type': 'text/plain' }, body: 'hello repeater' }],
+      ['rep-json', { url: `${H2}/json?x=1` }],
+      ['rep-headers', { url: `${H2}/headers`, headers: { 'X-A': ['1', '2'], 'X-Single': 'v' } }],
+      ['rep-404', { url: `${H2}/404` }],
+      ['rep-bad-url', { url: 'not a url' }],
+      ['rep-refused', { url: `http://127.0.0.1:${closedPort}/x` }],
+    ];
+    for (const [name, reqBody] of repeater) {
+      const run = {};
+      for (const b of [nodeB, rustB]) {
+        const r = await call3(b, 'POST', '/repeater/send', reqBody);
+        run[b.name] = { client: { headers: [] }, origin: [], flow: null, extra: normResp(r) };
+      }
+      record(name, run.node, run.rust);
+    }
+
+    // Intruder: collect the streamed rows via WS, compare the sequence.
+    const intruderCases = [
+      ['intr-sniper', { url: `${H2}/json?a=§x§&b=§y§`, attackType: 'sniper', payloads: ['1', '2'] }],
+      ['intr-ram', { method: 'POST', url: `${H2}/echo`, headers: { 'Content-Type': 'text/plain' }, body: 'v=§P§-§P§', attackType: 'batteringram', payloads: ['aa', 'bb'] }],
+      ['intr-encode', { url: `${H2}/json?q=§Z§`, attackType: 'sniper', payloads: ['a b&c'], urlEncode: true }],
+      ['intr-no-pos', { url: `${H2}/plain`, attackType: 'sniper', payloads: ['x'] }],
+      ['intr-no-payloads', { url: `${H2}/§x§`, attackType: 'sniper', payloads: [] }],
+    ];
+    for (const [name, startBody] of intruderCases) {
+      const run = {};
+      for (const b of [nodeB, rustB]) {
+        const events = [];
+        const ws = new WebSocket(b.api.replace('http', 'ws').replace('/api', '/ws'));
+        await new Promise((r) => { ws.onopen = r; });
+        await sleep(200);
+        ws.onmessage = (e) => { const m = JSON.parse(e.data); if (m.type.startsWith('intruder-')) events.push(m); };
+        const start = await call3(b, 'POST', '/intruder/start', startBody);
+        await sleep(start.status === 200 ? 1500 : 100);
+        ws.close();
+        const rows = events.filter((m) => m.type === 'intruder-row').map((m) => {
+          const r = m.row; const resp = r.response || {};
+          return { index: r.index, position: r.position, payload: r.payload, statusCode: r.statusCode, length: r.length,
+            reqUrl: r.request?.url, reqBody: r.request?.body, respBodySha: resp.body ? sha(Buffer.from(resp.body)) : null, error: r.error };
+        });
+        const done = events.find((m) => m.type === 'intruder-done')?.summary;
+        const started = events.find((m) => m.type === 'intruder-start')?.info;
+        run[b.name] = { client: { headers: [] }, origin: [], flow: null, extra: { start: { status: start.status, body: start.body }, started, rows, done } };
+      }
+      record(name, run.node, run.rust);
+    }
   }
 
   // HTTP/2-only client against an HTTP/1.1-only origin.

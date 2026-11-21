@@ -302,6 +302,12 @@ pub struct AppState {
     ca: Arc<Mutex<Option<Arc<CertAuthority>>>>,
     /// ADB + the one-click setup flow.
     pub orchestrator: Arc<Orchestrator>,
+    /// Repeater (re-send a request).
+    pub repeater: Arc<hizn_tools::Repeater>,
+    /// Intruder (fuzz a request); streams over the WebSocket.
+    pub intruder: Arc<hizn_tools::Intruder>,
+    /// Intruder event sink → broadcast as intruder-start / row / done.
+    pub intruder_sink: hizn_tools::IntruderSink,
 }
 
 impl AppState {
@@ -424,11 +430,30 @@ impl AppState {
             hub.on_proxy_event(event);
         })));
         let orchestrator = Arc::new(Orchestrator::new(Devices::new(Adb::new())));
+        let sink_hub = hub.clone();
+        let intruder_sink: hizn_tools::IntruderSink = Arc::new(move |event| {
+            let mut hub = sink_hub.lock().unwrap_or_else(|p| p.into_inner());
+            let msg = match event {
+                hizn_tools::IntruderEvent::Start(info) => {
+                    json!({ "type": "intruder-start", "info": info })
+                }
+                hizn_tools::IntruderEvent::Row(row) => {
+                    json!({ "type": "intruder-row", "row": row })
+                }
+                hizn_tools::IntruderEvent::Done(summary) => {
+                    json!({ "type": "intruder-done", "summary": summary })
+                }
+            };
+            hub.broadcast(&msg);
+        });
         Self {
             hub,
             proxy,
             ca: Arc::new(Mutex::new(None)),
             orchestrator,
+            repeater: Arc::new(hizn_tools::Repeater::new()),
+            intruder: Arc::new(hizn_tools::Intruder::new()),
+            intruder_sink,
         }
     }
 
