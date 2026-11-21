@@ -14,7 +14,7 @@ use axum::extract::ws::Utf8Bytes;
 use hizn_proxy::{CaError, CertAuthority, ProxyEngine, ProxyEvent, hizn_dir};
 use indexmap::{IndexMap, IndexSet};
 use serde::Serialize;
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 /// Server-side flow log cap; the oldest flow is dropped past this.
@@ -43,30 +43,16 @@ impl Default for UpstreamConfig {
     }
 }
 
-/// Burp-style interception switches.
-#[derive(Clone, Debug, Serialize)]
-pub struct InterceptConfig {
-    pub enabled: bool,
-    pub requests: bool,
-    pub responses: bool,
-}
+/// Burp-style intercept switches as the engine reports them (raw JSON: a
+/// switch posted as missing is absent, exactly as Node showed it).
+pub type InterceptConfig = Map<String, Value>;
 
-impl Default for InterceptConfig {
-    fn default() -> Self {
-        // Responses are only held when explicitly asked for.
-        Self {
-            enabled: false,
-            requests: true,
-            responses: false,
-        }
-    }
-}
-
-/// Target scope: limit interception to specific hosts.
-#[derive(Clone, Debug, Default, Serialize)]
-pub struct ScopeConfig {
-    pub enabled: bool,
-    pub hosts: Vec<String>,
+fn default_intercept() -> InterceptConfig {
+    let mut m = Map::new();
+    m.insert("enabled".into(), json!(false));
+    m.insert("requests".into(), json!(true));
+    m.insert("responses".into(), json!(false));
+    m
 }
 
 /// `GET /status` and the `proxy-status` event payload.
@@ -89,8 +75,9 @@ pub struct Hub {
     pub running: bool,
     pub proxy_port: u16,
     pub upstream: UpstreamConfig,
+    /// Mirrors of the engine's state, kept current from its events.
     pub intercept: InterceptConfig,
-    pub scope: ScopeConfig,
+    pub scope: Value,
     pub ca_fingerprint: Option<String>,
     /// Serials hizn has actively routed (one-click connected), in insertion order.
     pub connected: IndexSet<String>,
@@ -108,8 +95,8 @@ impl Default for Hub {
             running: false,
             proxy_port: DEFAULT_PROXY_PORT,
             upstream: UpstreamConfig::default(),
-            intercept: InterceptConfig::default(),
-            scope: ScopeConfig::default(),
+            intercept: default_intercept(),
+            scope: json!({ "enabled": false, "hosts": [] }),
             ca_fingerprint: None,
             connected: IndexSet::new(),
             flows: IndexMap::new(),
@@ -224,6 +211,56 @@ impl Hub {
         self.broadcast(&json!({ "type": "flow-update", "update": update }));
     }
 
+    /// Store a WebSocket message on its flow (newest [`MAX_WS_MESSAGES`] kept)
+    /// so history survives a UI reconnect, then stream it.
+    pub fn add_ws_message(&mut self, msg: Value) {
+        if let Some(id) = msg.get("id").and_then(Value::as_str)
+            && let Some(Value::Object(flow)) = self.flows.get_mut(id)
+        {
+            let list = flow
+                .entry("wsMessages")
+                .or_insert_with(|| Value::Array(Vec::new()));
+            if !list.is_array() {
+                *list = Value::Array(Vec::new());
+            }
+            if let Value::Array(list) = list {
+                list.push(msg.clone());
+                if list.len() > MAX_WS_MESSAGES {
+                    list.remove(0);
+                }
+            }
+        }
+        self.broadcast(&json!({ "type": "ws-message", "msg": msg }));
+    }
+
+    /// Mirror one engine event and pass it on to the UI, as the Node server's
+    /// `wireProxyEvents` did.
+    pub fn on_proxy_event(&mut self, event: ProxyEvent) {
+        match event {
+            ProxyEvent::Flow(flow) => self.add_flow(flow),
+            ProxyEvent::FlowUpdate(update) => self.update_flow(update),
+            ProxyEvent::WsMessage(msg) => self.add_ws_message(msg),
+            ProxyEvent::Intercept(item) => {
+                if let Some(id) = item.get("id").and_then(Value::as_str) {
+                    self.pending.insert(id.to_owned(), item.clone());
+                }
+                self.broadcast(&json!({ "type": "intercept", "item": item }));
+            }
+            ProxyEvent::InterceptClosed(id) => {
+                self.pending.shift_remove(&id);
+                self.broadcast(&json!({ "type": "intercept-closed", "ref": { "id": id } }));
+            }
+            ProxyEvent::InterceptConfig(config) => {
+                self.intercept = config;
+                self.broadcast(&json!({ "type": "intercept-config", "config": self.intercept }));
+            }
+            ProxyEvent::Scope(scope) => {
+                self.scope = scope;
+                self.broadcast(&json!({ "type": "scope", "scope": self.scope }));
+            }
+        }
+    }
+
     /// Replace the whole flow log (session import) and push it to everyone.
     pub fn replace_flows(&mut self, flows: Vec<Value>) -> usize {
         self.flows.clear();
@@ -270,10 +307,7 @@ impl AppState {
         let events_hub = hub.clone();
         let proxy = Arc::new(ProxyEngine::new(Arc::new(move |event| {
             let mut hub = events_hub.lock().unwrap_or_else(|p| p.into_inner());
-            match event {
-                ProxyEvent::Flow(flow) => hub.add_flow(flow),
-                ProxyEvent::FlowUpdate(update) => hub.update_flow(update),
-            }
+            hub.on_proxy_event(event);
         })));
         Self {
             hub,

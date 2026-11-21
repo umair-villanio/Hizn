@@ -3,7 +3,6 @@
 //!
 //! SPDX-License-Identifier: AGPL-3.0-only
 
-use std::convert::Infallible;
 use std::future::Future;
 use std::io;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
@@ -21,7 +20,7 @@ use tokio::sync::watch;
 use tokio_rustls::LazyConfigAcceptor;
 
 use crate::Shared;
-use crate::forward::{self, ResBody, empty, text_response};
+use crate::forward::{self, Served, empty, text_response};
 use crate::io::Prefixed;
 use crate::upstream::connect_tunnel;
 use crate::ws;
@@ -103,11 +102,12 @@ async fn serve_proxy_client(shared: Arc<Shared>, stream: TcpStream, stop: watch:
         .await;
 }
 
+/// `Err(Dropped)` makes hyper close the connection without a response.
 async fn proxy_request(
     shared: Arc<Shared>,
     mut req: Request<Incoming>,
     stop: watch::Receiver<bool>,
-) -> Result<Response<ResBody>, Infallible> {
+) -> Served {
     if req.method() == Method::CONNECT {
         let Some(authority) = req.uri().authority().map(|a| a.as_str().to_owned()) else {
             return Ok(text_response(
@@ -130,7 +130,7 @@ async fn proxy_request(
     if ws::is_upgrade(&req) {
         return Ok(ws::passthrough(shared, req, "http", None, stop).await);
     }
-    Ok(forward::forward(shared, req, "http", None).await)
+    forward::forward(shared, req, "http", None).await
 }
 
 /// Inside a CONNECT tunnel: intercept TLS, serve plain HTTP, or (anything
@@ -220,11 +220,11 @@ async fn serve_tunneled<I>(
         let authority = authority.clone();
         let stop = stop.clone();
         async move {
-            Ok::<_, Infallible>(if ws::is_upgrade(&req) {
-                ws::passthrough(shared, req, scheme, Some(&authority), stop).await
+            if ws::is_upgrade(&req) {
+                Ok(ws::passthrough(shared, req, scheme, Some(&authority), stop).await)
             } else {
                 forward::forward(shared, req, scheme, Some(&authority)).await
-            })
+            }
         }
     });
     if h2 {

@@ -15,14 +15,13 @@ use axum::{Json, Router};
 use indexmap::IndexMap;
 use serde_json::{Value, json};
 
+use hizn_proxy::Decision;
+
 use crate::state::{AppState, ProxyStatus, UpstreamConfig};
 
 /// Not-yet-ported routes: (method, path, phase).
 pub const PENDING: &[(&str, &str, u8)] = &[
     ("GET", "/devices", 4),
-    ("GET", "/intercept", 3),
-    ("POST", "/intercept/config", 3),
-    ("POST", "/intercept/resolve", 3),
     ("GET", "/connections", 4),
     ("POST", "/connect", 4),
     ("POST", "/disconnect", 4),
@@ -31,10 +30,6 @@ pub const PENDING: &[(&str, &str, u8)] = &[
     ("GET", "/desktop/info", 5),
     ("POST", "/desktop/import-ca", 5),
     ("POST", "/desktop/firefox", 5),
-    ("GET", "/rules", 3),
-    ("POST", "/rules", 3),
-    ("GET", "/scope", 3),
-    ("POST", "/scope", 3),
     ("POST", "/intruder/start", 5),
     ("POST", "/intruder/stop", 5),
     ("POST", "/repeater/send", 5),
@@ -61,6 +56,13 @@ pub const PORTED: &[(&str, &str)] = &[
     ("GET", "/flows"),
     ("POST", "/flows/clear"),
     ("POST", "/flows/import"),
+    ("GET", "/intercept"),
+    ("POST", "/intercept/config"),
+    ("POST", "/intercept/resolve"),
+    ("GET", "/rules"),
+    ("POST", "/rules"),
+    ("GET", "/scope"),
+    ("POST", "/scope"),
 ];
 
 pub fn router() -> Router<AppState> {
@@ -73,6 +75,11 @@ pub fn router() -> Router<AppState> {
     by_path.insert("/flows", get(flows));
     by_path.insert("/flows/clear", post(flows_clear));
     by_path.insert("/flows/import", post(flows_import));
+    by_path.insert("/intercept", get(intercept));
+    by_path.insert("/intercept/config", post(intercept_config));
+    by_path.insert("/intercept/resolve", post(intercept_resolve));
+    by_path.insert("/rules", get(rules).post(set_rules));
+    by_path.insert("/scope", get(scope).post(set_scope));
 
     for &(method, path, phase) in PENDING {
         let filter = match method {
@@ -206,6 +213,72 @@ async fn flows_import(State(state): State<AppState>, JsonBody(body): JsonBody) -
     };
     let count = state.hub().replace_flows(incoming);
     Json(json!({ "ok": true, "count": count }))
+}
+
+// --------------------------------------------- intercept / rules / scope
+
+async fn intercept(State(state): State<AppState>) -> Json<Value> {
+    Json(json!({
+        "config": state.proxy.intercept_config(),
+        "pending": state.proxy.pending_intercepts(),
+    }))
+}
+
+/// `setInterceptConfig({ enabled: req.body?.enabled, ... })`: a missing key
+/// becomes `undefined`, an explicit `null` stays `null`.
+async fn intercept_config(State(state): State<AppState>, JsonBody(body): JsonBody) -> Json<Value> {
+    let field = |k: &str| body.get(k).cloned();
+    let config =
+        state
+            .proxy
+            .set_intercept_config(field("enabled"), field("requests"), field("responses"));
+    Json(Value::Object(config))
+}
+
+async fn intercept_resolve(State(state): State<AppState>, JsonBody(body): JsonBody) -> Response {
+    let id = body.get("id");
+    if !hizn_proxy::js::truthy(id) {
+        return error(StatusCode::BAD_REQUEST, "Missing id");
+    }
+    // Held items are keyed by string ids; anything else can't match.
+    let found = match id {
+        Some(Value::String(id)) => state
+            .proxy
+            .resolve_intercept(id, Decision::from_json(&body)),
+        _ => false,
+    };
+    if !found {
+        return error(
+            StatusCode::NOT_FOUND,
+            "No such held item (already resolved?)",
+        );
+    }
+    Json(json!({ "ok": true })).into_response()
+}
+
+async fn rules(State(state): State<AppState>) -> Json<Value> {
+    Json(Value::Array(state.proxy.rules()))
+}
+
+async fn set_rules(State(state): State<AppState>, JsonBody(body): JsonBody) -> Json<Value> {
+    let rules = match body.get("rules") {
+        Some(Value::Array(list)) => list.clone(),
+        _ => Vec::new(),
+    };
+    Json(Value::Array(state.proxy.set_rules(rules)))
+}
+
+async fn scope(State(state): State<AppState>) -> Json<Value> {
+    Json(state.proxy.scope().to_json())
+}
+
+async fn set_scope(State(state): State<AppState>, JsonBody(body): JsonBody) -> Json<Value> {
+    Json(
+        state
+            .proxy
+            .set_scope(body.get("enabled"), body.get("hosts"))
+            .to_json(),
+    )
 }
 
 // ----------------------------------------------------------------- helpers

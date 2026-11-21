@@ -29,6 +29,13 @@ uuid = { version = "1", features = ["v4"] }
 sha2 = "0.11"
 socket2 = { version = "0.6", features = ["all"] }
 tower-service = "0.3"
+indexmap = "2"
+# JavaScript-like regexes (lookaround, backreferences) for Match & Replace and scope.
+fancy-regex = "0.20"
+# Content codecs, so rewritten bodies are re-encoded like mockttp does. All pure Rust.
+flate2 = "1"
+brotli = "9"
+ruzstd = "0.9"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["io-util", "time", "macros", "rt-multi-thread"] }

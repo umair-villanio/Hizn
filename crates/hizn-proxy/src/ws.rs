@@ -7,13 +7,14 @@
 //!
 //! SPDX-License-Identifier: AGPL-3.0-only
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use http::{Request, Response, StatusCode, Version};
 use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
 use hyper_util::rt::TokioIo;
 use serde_json::json;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::watch;
 
 use crate::forward::{
@@ -21,6 +22,7 @@ use crate::forward::{
     text_response,
 };
 use crate::headers::node_headers;
+use crate::wsframe::{Deflate, Event, FrameReader, MAX_WS_MSG};
 use crate::{ProxyEvent, Shared, new_id, now_ms};
 
 pub(crate) fn is_upgrade(req: &Request<Incoming>) -> bool {
@@ -100,27 +102,107 @@ pub(crate) async fn passthrough(
         "wsState": "open",
     })));
 
+    let deflate = parts
+        .headers
+        .get("sec-websocket-extensions")
+        .and_then(|v| v.to_str().ok())
+        .and_then(Deflate::negotiated);
     let pipe_shared = shared.clone();
     let mut stop = shutdown;
     tokio::spawn(async move {
+        let close = Arc::new(Mutex::new(None::<Option<u16>>));
         let joined = async {
             let (client, server) = tokio::try_join!(client_upgrade, server_upgrade).ok()?;
-            let mut client = TokioIo::new(client);
-            let mut server = TokioIo::new(server);
-            let _ = tokio::io::copy_bidirectional(&mut client, &mut server).await;
+            let (client_rd, client_wr) = tokio::io::split(TokioIo::new(client));
+            let (server_rd, server_wr) = tokio::io::split(TokioIo::new(server));
+            let up = pump(
+                client_rd,
+                server_wr,
+                FrameReader::new(deflate.map(|d| d.client_no_context_takeover)),
+                "outgoing",
+                &pipe_shared,
+                &id,
+                &close,
+            );
+            let down = pump(
+                server_rd,
+                client_wr,
+                FrameReader::new(deflate.map(|d| d.server_no_context_takeover)),
+                "incoming",
+                &pipe_shared,
+                &id,
+                &close,
+            );
+            let _ = tokio::try_join!(up, down);
             Some(())
         };
         tokio::select! {
             _ = joined => {}
             _ = stop.wait_for(|stopped| *stopped) => {}
         }
+        // No close frame at all = abnormal closure (1006); one without a
+        // status code = 1005 — the codes the `ws` library reports.
+        let code = match *close.lock().unwrap_or_else(|p| p.into_inner()) {
+            Some(Some(code)) => code,
+            Some(None) => 1005,
+            None => 1006,
+        };
         pipe_shared.emit(ProxyEvent::FlowUpdate(json!({
             "id": id,
             "ws": true,
             "wsState": "closed",
+            "wsCloseCode": code,
             "completedAt": now_ms(),
         })));
     });
 
     Response::from_parts(parts, empty())
+}
+
+/// Copy one direction verbatim, reporting each message as it completes.
+/// `dir` is from the app's point of view: `outgoing` = app → server.
+async fn pump<R, W>(
+    mut from: R,
+    mut to: W,
+    mut frames: FrameReader,
+    dir: &'static str,
+    shared: &Shared,
+    id: &str,
+    close: &Mutex<Option<Option<u16>>>,
+) -> std::io::Result<()>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    let mut buf = vec![0u8; 16 * 1024];
+    loop {
+        let n = from.read(&mut buf).await?;
+        if n == 0 {
+            let _ = to.shutdown().await;
+            return Ok(());
+        }
+        // Forward first, then look: inspection never delays the stream.
+        to.write_all(&buf[..n]).await?;
+        for event in frames.push(&buf[..n]) {
+            match event {
+                Event::Message { binary, head, size } => {
+                    shared.emit(ProxyEvent::WsMessage(json!({
+                        "id": id,
+                        "dir": dir,
+                        "text": String::from_utf8_lossy(&head),
+                        "isBinary": binary,
+                        "size": size,
+                        "truncated": size > MAX_WS_MSG as u64,
+                        "at": now_ms(),
+                    })));
+                }
+                Event::Close(code) => {
+                    let mut first = close.lock().unwrap_or_else(|p| p.into_inner());
+                    if first.is_none() {
+                        *first = Some(code);
+                    }
+                }
+            }
+        }
+    }
 }

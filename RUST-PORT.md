@@ -215,7 +215,7 @@ before the next one starts.
   `/upstream`, `/flows`, `/flows/clear`, `/flows/import`.
 - **Parity harness** (`tools/parity/proxy-parity.mjs`): runs both backends side
   by side and compares what the client got, what the origin got, and the
-  flow. Result: **45/45** — 36 identical, 9 with only the differences below.
+  flow. Phase 2 result: **45/45** — 36 identical, 9 with only the differences below.
   Covers HTTP, HTTPS (by name and IP), query strings, JSON and 1 MB uploads,
   chunked, gzip, brotli, a 2 MB binary body, UTF-8 and invalid bytes, 204,
   HEAD, redirects, repeated headers both ways, 404, plain HTTP inside CONNECT,
@@ -239,8 +239,8 @@ before the next one starts.
 | `POST /upstream` without host/port | sets them to `undefined` | keeps the previous values | the UI always sends both |
 | Origin certificate trust | Node's bundled roots | Mozilla roots + Windows store (+ `HIZN_EXTRA_CA_CERTS`) | a Burp CA trusted by Windows works when chaining |
 
-Moved to Phase 3: WebSocket frame history (`ws-message`, `wsMessages`,
-`wsCloseCode`).
+WebSocket frame history (`ws-message`, `wsMessages`, `wsCloseCode`) landed in
+Phase 3.
 
 Run the harness:
 
@@ -249,15 +249,50 @@ cargo build -p hizn-server
 node tools/parity/proxy-parity.mjs --node ../droidmitm --rust target/debug/hizn.exe
 ```
 
-### Phase 3 — Proxy features
-- Intercept: hold / edit / forward / drop for requests and responses, per-request
-  "intercept response", held items in the hello snapshot.
-- Match & Replace rules (all 5 parts, regex + literal).
-- Target scope (substring + `*.wildcard`).
-- WebSocket interception history (`ws-message`, frame caps, `wsCloseCode`) —
-  parse frames from the passthrough streams, including permessage-deflate.
-- **Exit:** parity harness covers intercept edits, rules, and scope; manual
-  intercept session matches Node behavior.
+### Phase 3 — Proxy features ✅ verified
+- **Intercept** (`policy.rs`, `forward.rs`): hold / edit / forward / drop for
+  requests and responses, per-request "intercept response", turning a kind off
+  releases its held items, stopping releases everything, held items in the
+  hello snapshot. Drop closes the connection with no reply, as mockttp does.
+- **Edits** behave like mockttp: edited or rule-rewritten bodies are re-encoded
+  per `Content-Encoding` (gzip / deflate / br / zstd, level 1 as mockttp uses);
+  `content-length` updated in place or appended (not when chunked); a new URL
+  host updates `Host`; flows show the request as received and the response as
+  sent.
+- **Match & Replace** (`js.rs`): the Node semantics, quirks included —
+  `fancy-regex` for JS-style patterns (lookaround, backreferences), V8's `$`
+  substitutions (`$1 $& $$ $\` $' $<name>`), literal split/join, header rules on
+  the `"name: value"` text form, `String()` of non-string inputs, invalid
+  patterns ignored.
+- **Scope**: substring or `*` pattern (only `.` escaped, like Node), host with
+  or without port; out-of-scope traffic is never held.
+- **WebSocket history** (`wsframe.rs`): a passive streaming reader per
+  direction — unmasking, fragments, control frames, permessage-deflate with
+  the negotiated context takeover — reporting each message (text, size,
+  64 KB cap) and the close code (1005 / 1006 when absent), without touching
+  the forwarded bytes.
+- **Responses are buffered only when held or rewritten**; otherwise they
+  still stream.
+- **Routes ported (15/38):** adds `/intercept`, `/intercept/config`,
+  `/intercept/resolve`, `/rules` (GET/POST), `/scope` (GET/POST). Events:
+  `intercept`, `intercept-closed`, `intercept-config`, `scope`, `ws-message`.
+- **Parity harness: 73/73** (61 identical). Adds 13 Match & Replace cases,
+  scope in / out, 6 intercept cases (forward, edit, drop, response edit,
+  response drop, config-off release), the API quirks, compressed WebSockets
+  through the real `ws` library (context takeover, binary, fragments,
+  100 KB truncation, close 4001), and the live event stream of a whole
+  intercept cycle — identical in content and order (`intercept` before
+  `flow`, as mockttp's asynchronous announce made it).
+- Checked in the real UI: switched Intercept on, edited the held request in the
+  editor, Forward — the added header reached the origin.
+
+**Further differences from Node:**
+
+| | Node (mockttp) | Rust | Why |
+|---|---|---|---|
+| Rules on bodies over 512 KB | only the first 512 KB is searched; a match there cuts the body to 512 KB | the whole body | fix (data loss) |
+| Re-compressed body bytes | Node zlib, level 1 | miniz, level 1 | different DEFLATE encoders pick different matches; the harness checks the *decompressed* content is identical |
+| Header names a user types in an edit | sent with the typed case | sent lowercase | HTTP header names are case-insensitive |
 
 ### Phase 4 — Devices + Frida
 - ADB: device list, global proxy, CA push (rooted + APEX path, non-rooted staging),

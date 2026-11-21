@@ -9,33 +9,49 @@
 
 pub mod ca;
 mod capture;
+pub mod codec;
 mod forward;
 pub mod headers;
 mod io;
+pub mod js;
 mod listener;
+mod policy;
 mod upstream;
 mod ws;
+mod wsframe;
 
 use std::io as stdio;
 use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, MutexGuard, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde_json::Value;
+use serde_json::{Map, Value};
 use tokio::sync::{Mutex, watch};
 use tokio::task::JoinHandle;
 
 pub use ca::{CaError, CertAuthority, hizn_dir};
 pub use capture::MAX_BODY_TEXT;
+pub use policy::{Decision, Scope};
 use upstream::{Clients, Route};
 
-/// Something the UI should hear about.
+/// Something the UI should hear about. Payloads are the JSON the Node backend
+/// sent, so the server can broadcast them as-is.
 #[derive(Debug, Clone)]
 pub enum ProxyEvent {
     /// A new exchange (`type: 'flow'` payload).
     Flow(Value),
     /// More about an existing exchange (`type: 'flow-update'` payload).
     FlowUpdate(Value),
+    /// A WebSocket message (`type: 'ws-message'` payload).
+    WsMessage(Value),
+    /// A request or response is now held (`type: 'intercept'` item).
+    Intercept(Value),
+    /// A held item was decided (`type: 'intercept-closed'`, `ref: { id }`).
+    InterceptClosed(String),
+    /// Intercept switches changed (`type: 'intercept-config'`).
+    InterceptConfig(Map<String, Value>),
+    /// Target scope changed (`type: 'scope'`).
+    Scope(Value),
 }
 
 pub type EventSink = Arc<dyn Fn(ProxyEvent) + Send + Sync>;
@@ -48,11 +64,37 @@ pub(crate) struct Shared {
     clients: RwLock<Arc<Clients>>,
     ca: RwLock<Option<Arc<CertAuthority>>>,
     listen_port: AtomicU16,
+    policy: std::sync::Mutex<policy::Policy>,
 }
 
 impl Shared {
+    /// Never call while holding the policy lock: the sink takes the server's
+    /// lock, and the server calls into the policy.
     pub(crate) fn emit(&self, event: ProxyEvent) {
         (self.events)(event);
+    }
+
+    pub(crate) fn policy(&self) -> MutexGuard<'_, policy::Policy> {
+        self.policy.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// Hold an item until the user decides. Emits `intercept` now (then
+    /// `then`, if given) and `intercept-closed` when decided (by whoever
+    /// resolves it).
+    pub(crate) async fn hold(&self, item: Value, then: Option<ProxyEvent>) -> Decision {
+        let rx = self.policy().hold(item.clone());
+        self.emit(ProxyEvent::Intercept(item));
+        if let Some(event) = then {
+            self.emit(event);
+        }
+        // Sender dropped (should not happen): carry on unchanged.
+        rx.await.unwrap_or_default()
+    }
+
+    fn emit_closed(&self, ids: Vec<String>) {
+        for id in ids {
+            self.emit(ProxyEvent::InterceptClosed(id));
+        }
     }
 
     pub(crate) fn clients(&self) -> Arc<Clients> {
@@ -130,6 +172,7 @@ impl ProxyEngine {
                 clients: RwLock::new(clients),
                 ca: RwLock::new(None),
                 listen_port: AtomicU16::new(0),
+                policy: std::sync::Mutex::new(policy::Policy::default()),
             }),
             running: Mutex::new(None),
             is_running: AtomicBool::new(false),
@@ -163,15 +206,78 @@ impl ProxyEngine {
         Ok(())
     }
 
-    /// Stop listening and drop every open connection.
+    /// Stop listening and drop every open connection. Anything held is
+    /// released first, so no client waits forever.
     pub async fn stop(&self) {
         let mut running = self.running.lock().await;
         if let Some(r) = running.take() {
+            let released = self.shared.policy().release_all();
+            self.shared.emit_closed(released);
             let _ = r.shutdown.send(true);
             r.task.abort();
             let _ = r.task.await;
         }
         self.is_running.store(false, Ordering::SeqCst);
+    }
+
+    // ------------------------------------------------------------ intercept
+
+    pub fn intercept_config(&self) -> Map<String, Value> {
+        self.shared.policy().intercept()
+    }
+
+    /// Set the switches (`None` = missing from the request). Held items of a
+    /// kind that is now off are forwarded unchanged.
+    pub fn set_intercept_config(
+        &self,
+        enabled: Option<Value>,
+        requests: Option<Value>,
+        responses: Option<Value>,
+    ) -> Map<String, Value> {
+        let (config, released) = self
+            .shared
+            .policy()
+            .set_intercept(enabled, requests, responses);
+        // Node emitted the config synchronously, the closes a tick later.
+        self.shared
+            .emit(ProxyEvent::InterceptConfig(config.clone()));
+        self.shared.emit_closed(released);
+        config
+    }
+
+    /// Decide a held item. False if there's no such item.
+    pub fn resolve_intercept(&self, id: &str, decision: Decision) -> bool {
+        let ok = self.shared.policy().resolve(id, decision);
+        if ok {
+            self.shared.emit(ProxyEvent::InterceptClosed(id.to_owned()));
+        }
+        ok
+    }
+
+    pub fn pending_intercepts(&self) -> Vec<Value> {
+        self.shared.policy().pending_items()
+    }
+
+    // ---------------------------------------------------------------- rules
+
+    pub fn rules(&self) -> Vec<Value> {
+        self.shared.policy().rules()
+    }
+
+    pub fn set_rules(&self, rules: Vec<Value>) -> Vec<Value> {
+        self.shared.policy().set_rules(rules)
+    }
+
+    // ---------------------------------------------------------------- scope
+
+    pub fn scope(&self) -> Scope {
+        self.shared.policy().scope()
+    }
+
+    pub fn set_scope(&self, enabled: Option<&Value>, hosts: Option<&Value>) -> Scope {
+        let scope = self.shared.policy().set_scope(enabled, hosts);
+        self.shared.emit(ProxyEvent::Scope(scope.to_json()));
+        scope
     }
 
     /// Route all traffic through `upstream` (host, port), or directly with

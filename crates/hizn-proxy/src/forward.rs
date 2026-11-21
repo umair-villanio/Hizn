@@ -1,8 +1,10 @@
-//! Forward one HTTP exchange to its origin and report it as a flow.
+//! Forward one HTTP exchange to its origin and report it as a flow, applying
+//! Match & Replace rules and Burp-style interception on the way.
 //!
-//! Event timing matches mockttp: `flow` once the request body has fully
-//! arrived, `flow-update` once the response body has been fully delivered (or
-//! `error: 'aborted'` if it never was).
+//! Event timing matches mockttp: `flow` (the request as received) once the
+//! request body has fully arrived, `flow-update` (the response as sent) once
+//! the response body has been delivered — or `error: 'aborted'` if it never
+//! was, including when the user drops it.
 //!
 //! SPDX-License-Identifier: AGPL-3.0-only
 
@@ -10,19 +12,102 @@ use std::convert::Infallible;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use http::header::{self, HeaderMap, HeaderName};
+use http::header::{self, HeaderMap, HeaderName, HeaderValue};
 use http::{Method, Request, Response, StatusCode, Version};
 use http_body_util::combinators::UnsyncBoxBody;
 use http_body_util::{BodyExt, Empty, Full};
 use hyper::body::Incoming;
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
-use crate::capture::{CaptureBody, Captured, Outcome};
+use crate::capture::{CaptureBody, Captured, MAX_BODY_TEXT, Outcome};
 use crate::headers::node_headers;
-use crate::{ProxyEvent, Shared, new_id, now_ms};
+use crate::policy::Decision;
+use crate::{ProxyEvent, Shared, codec, js, new_id, now_ms};
 
 pub(crate) type BoxError = Box<dyn std::error::Error + Send + Sync>;
 pub(crate) type ResBody = UnsyncBoxBody<Bytes, BoxError>;
+
+/// The user dropped the exchange: close the connection without a response
+/// (returning this error from a hyper service does exactly that).
+#[derive(Debug)]
+pub(crate) struct Dropped;
+
+impl std::fmt::Display for Dropped {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("dropped by the user")
+    }
+}
+
+impl std::error::Error for Dropped {}
+
+pub(crate) type Served = Result<Response<ResBody>, Dropped>;
+
+fn full(bytes: impl Into<Bytes>) -> ResBody {
+    Full::new(bytes.into())
+        .map_err(|never| match never {})
+        .boxed_unsync()
+}
+
+fn report_aborted(shared: &Shared, id: &str) {
+    shared.emit(ProxyEvent::FlowUpdate(
+        json!({ "id": id, "error": "aborted", "completedAt": now_ms() }),
+    ));
+}
+
+/// Body as text the way mockttp's `body.getText()` gives it: decoded per
+/// `Content-Encoding`, as UTF-8; empty if it can't be decoded.
+fn body_text(raw: &[u8], encodings: &[String]) -> String {
+    if encodings.is_empty() {
+        return String::from_utf8_lossy(raw).into_owned();
+    }
+    codec::decode(raw, encodings)
+        .map(|d| String::from_utf8_lossy(&d).into_owned())
+        .unwrap_or_default()
+}
+
+/// Rewritten text back to bytes, re-encoded per the final `Content-Encoding`.
+fn encode_text(text: &str, headers: &HeaderMap) -> Bytes {
+    let encodings = codec::encodings(headers);
+    if encodings.is_empty() {
+        return Bytes::copy_from_slice(text.as_bytes());
+    }
+    codec::encode(text.as_bytes(), &encodings)
+        .map(Bytes::from)
+        .unwrap_or_else(|| Bytes::copy_from_slice(text.as_bytes()))
+}
+
+/// A headers object (from rules or the user's edit) as a header map. Names
+/// go out lowercase; arrays become repeated headers; pseudo-headers and
+/// unencodable values are skipped.
+fn headers_from_object(obj: &Map<String, Value>) -> HeaderMap {
+    let mut out = HeaderMap::new();
+    for (name, value) in obj {
+        if name.starts_with(':') {
+            continue;
+        }
+        let Ok(name) = HeaderName::from_bytes(name.trim().as_bytes()) else {
+            continue;
+        };
+        let values: Vec<String> = match value {
+            Value::Array(list) => list.iter().map(js::string).collect(),
+            other => vec![js::string(other)],
+        };
+        for v in values {
+            if let Ok(v) = HeaderValue::from_str(&v) {
+                out.append(name.clone(), v);
+            }
+        }
+    }
+    out
+}
+
+/// After changing headers or body, keep `content-length` truthful — updated in
+/// place, or appended — unless the message is chunked (as mockttp does).
+fn fix_content_length(headers: &mut HeaderMap, len: usize) {
+    if !headers.contains_key(header::TRANSFER_ENCODING) {
+        headers.insert(header::CONTENT_LENGTH, HeaderValue::from(len));
+    }
+}
 
 pub(crate) fn empty() -> ResBody {
     Empty::new()
@@ -157,16 +242,19 @@ pub(crate) async fn forward(
     req: Request<Incoming>,
     scheme: &'static str,
     fallback: Option<&str>,
-) -> Response<ResBody> {
+) -> Served {
     let (mut parts, body) = req.into_parts();
     // mockttp never reports or forwards the client's proxy hint.
     parts.headers.remove("proxy-connection");
     let Some(target) = Target::resolve(&parts, scheme, fallback) else {
-        return text_response(StatusCode::BAD_REQUEST, "Bad request: no target host");
+        return Ok(text_response(
+            StatusCode::BAD_REQUEST,
+            "Bad request: no target host",
+        ));
     };
     // The client gave up while uploading: nothing to forward or report.
-    let Ok(body) = body.collect().await.map(|c| c.to_bytes()) else {
-        return text_response(StatusCode::BAD_REQUEST, "");
+    let Ok(mut body) = body.collect().await.map(|c| c.to_bytes()) else {
+        return Ok(text_response(StatusCode::BAD_REQUEST, ""));
     };
 
     let id = new_id();
@@ -198,11 +286,11 @@ pub(crate) async fn forward(
         flow["requestBody"] = Value::String(text);
     }
     flow["startedAt"] = json!(now_ms());
-    shared.emit(ProxyEvent::Flow(flow));
 
     // A request aimed at the proxy itself (not *through* it) would loop.
     if shared.is_self(&target.host_name, target.port) {
-        return error_response(
+        shared.emit(ProxyEvent::Flow(flow));
+        return Ok(error_response(
             &shared,
             &id,
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -211,14 +299,65 @@ pub(crate) async fn forward(
                 "Error: Passthrough loop detected. This probably means you're sending a request directly to a passthrough endpoint, which is forwarding it to the target URL, which is a passthrough endpoint, which is forwarding it to the target URL, which is a passthrough endpoint...\n\nYou should either explicitly mock a response for this URL ({}), or use the server as a proxy, instead of making requests to it directly.",
                 target.url
             ),
-        );
+        ));
+    }
+
+    // ---- Match & Replace, then (optionally) hold for the user ----
+    let mut destination = format!("{scheme}://{}{}", target.authority, target.path);
+    if let Some(edit) = before_request(&shared, &id, &parts, &body, &target, flow).await? {
+        if let Some(url) = edit.url
+            && let Ok(uri) = url.parse::<http::Uri>()
+            && let (Some(s), Some(a)) = (uri.scheme_str(), uri.authority())
+        {
+            // A new destination; the Host header follows it, as in mockttp.
+            if parts
+                .headers
+                .get(header::HOST)
+                .and_then(|h| h.to_str().ok())
+                != Some(a.as_str())
+                && let Ok(host) = HeaderValue::from_str(a.as_str())
+            {
+                parts.headers.insert(header::HOST, host);
+            }
+            let path = uri.path_and_query().map(|p| p.as_str()).unwrap_or("/");
+            let port = a.port_u16().unwrap_or(if s == "https" { 443 } else { 80 });
+            let host = a.host().trim_start_matches('[').trim_end_matches(']');
+            destination = format!(
+                "{s}://{}{path}",
+                crate::upstream::authority_string(host, port)
+            );
+        }
+        if let Some(method) = edit.method {
+            parts.method = method;
+        }
+        let replaced = edit.headers.is_some() || edit.body.is_some();
+        if let Some(headers) = edit.headers {
+            let host = parts.headers.get(header::HOST).cloned();
+            parts.headers = headers_from_object(&headers);
+            if !parts.headers.contains_key(header::HOST)
+                && let Some(host) = host
+            {
+                parts.headers.insert(header::HOST, host);
+            }
+        }
+        if let Some(text) = edit.body {
+            body = encode_text(&text, &parts.headers);
+        }
+        if replaced {
+            fix_content_length(&mut parts.headers, body.len());
+        }
     }
 
     let is_head = parts.method == Method::HEAD;
     strip_hop_by_hop(&mut parts.headers, h2);
-    parts.uri = match format!("{scheme}://{}{}", target.authority, target.path).parse() {
+    parts.uri = match destination.parse() {
         Ok(uri) => uri,
-        Err(_) => return text_response(StatusCode::BAD_REQUEST, "Bad request: invalid URL"),
+        Err(_) => {
+            return Ok(text_response(
+                StatusCode::BAD_REQUEST,
+                "Bad request: invalid URL",
+            ));
+        }
     };
     // HTTP/1.1 on the request either way: the h2 client sends it over HTTP/2
     // when the origin negotiates h2, and over HTTP/1.1 otherwise.
@@ -237,9 +376,242 @@ pub(crate) async fn forward(
     };
 
     match result {
-        Ok(res) => respond(shared, id, res, is_head, h2),
-        Err(e) => upstream_failed(&shared, &id, &e),
+        Ok(res) => {
+            let (holding, rewrites) = {
+                let mut policy = shared.policy();
+                let holding = policy.holds_response(&id, &target.host_field);
+                let rules = policy.rules_ref();
+                let rewrites =
+                    js::has_rule(rules, "response-header") || js::has_rule(rules, "response-body");
+                (holding, rewrites)
+            };
+            if holding || rewrites {
+                after_response(shared, id, res, holding, h2).await
+            } else {
+                Ok(respond(shared, id, res, is_head, h2))
+            }
+        }
+        Err(e) => Ok(upstream_failed(&shared, &id, &e)),
     }
+}
+
+/// Changes to apply to a request before forwarding it.
+struct RequestEdit {
+    url: Option<String>,
+    method: Option<Method>,
+    headers: Option<Map<String, Value>>,
+    body: Option<String>,
+}
+
+/// The Node backend's `onBeforeRequest`: Match & Replace first (so a held
+/// request shows the rewritten message), then hold it if intercepting.
+/// `Ok(None)` = forward untouched; `Err` = the user dropped it.
+///
+/// Also announces the `flow`: mockttp announced requests asynchronously, so a
+/// held request's `intercept` event reached the UI *before* its `flow`.
+async fn before_request(
+    shared: &Shared,
+    id: &str,
+    parts: &http::request::Parts,
+    body: &Bytes,
+    target: &Target,
+    flow: Value,
+) -> Result<Option<RequestEdit>, Dropped> {
+    let (holding, rules) = {
+        let policy = shared.policy();
+        (
+            policy.holds_requests(&target.host_field),
+            policy.rules_ref().to_vec(),
+        )
+    };
+    if !holding {
+        shared.emit(ProxyEvent::Flow(flow.clone()));
+    }
+    let body_rules = js::has_rule(&rules, "request-body");
+    if !holding
+        && !body_rules
+        && !js::has_rule(&rules, "request-url")
+        && !js::has_rule(&rules, "request-header")
+    {
+        return Ok(None);
+    }
+
+    // Rules see the whole decoded body (Node only looked at the first 512 KB,
+    // and cut longer bodies to that size when a rule matched).
+    let text = (holding || body_rules).then(|| body_text(body, &codec::encodings(&parts.headers)));
+
+    let (url, url_changed) = js::apply_rules(&target.url, &rules, "request-url");
+    let original_headers = node_headers(&parts.headers);
+    let rewritten_headers = js::apply_header_rules(&original_headers, &rules, "request-header");
+    let (body_text, body_changed) = match &text {
+        Some(t) if body_rules => js::apply_rules(t, &rules, "request-body"),
+        Some(t) => (t.clone(), false),
+        None => (String::new(), false),
+    };
+
+    if !holding {
+        return Ok(Some(RequestEdit {
+            url: url_changed.then_some(url),
+            method: None,
+            headers: rewritten_headers,
+            body: body_changed.then_some(body_text),
+        }));
+    }
+
+    let headers = rewritten_headers.clone().unwrap_or(original_headers);
+    let host = headers.get("host").cloned().unwrap_or_else(|| {
+        json!(
+            url.parse::<http::Uri>()
+                .ok()
+                .and_then(|u| u.authority().map(|a| a.to_string()))
+                .unwrap_or_default()
+        )
+    });
+    let (shown, truncated) = js::cap_utf16(&body_text, MAX_BODY_TEXT);
+    let decision = shared
+        .hold(
+            json!({
+                "id": id,
+                "flowId": id,
+                "kind": "request",
+                "method": parts.method.as_str(),
+                "url": url,
+                "host": host,
+                "path": target.path,
+                "headers": headers,
+                "body": shown,
+                "bodyTruncated": truncated,
+                "startedAt": now_ms(),
+            }),
+            Some(ProxyEvent::Flow(flow)),
+        )
+        .await;
+    if decision.drop {
+        report_aborted(shared, id);
+        return Err(Dropped);
+    }
+    if decision.intercept_response {
+        shared.policy().watch_response(id);
+    }
+    Ok(Some(RequestEdit {
+        url: Decision::truthy_string(&decision.url).or(url_changed.then_some(url)),
+        method: Decision::truthy_string(&decision.method)
+            .and_then(|m| Method::from_bytes(m.as_bytes()).ok()),
+        headers: decision.headers_object().cloned().or(rewritten_headers),
+        body: decision.edited_body().or(body_changed.then_some(body_text)),
+    }))
+}
+
+/// The Node backend's `onBeforeResponse`, for responses that are held or
+/// rewritten: buffer, apply rules, hold if asked, send the result.
+async fn after_response(
+    shared: Arc<Shared>,
+    id: String,
+    res: Response<Incoming>,
+    holding: bool,
+    h2_client: bool,
+) -> Served {
+    let (mut parts, body) = res.into_parts();
+    let Ok(raw) = body.collect().await.map(|c| c.to_bytes()) else {
+        report_aborted(&shared, &id);
+        return Err(Dropped);
+    };
+    let rules = shared.policy().rules();
+    let body_rules = js::has_rule(&rules, "response-body");
+    let original_headers = node_headers(&parts.headers);
+    let rewritten_headers = js::apply_header_rules(&original_headers, &rules, "response-header");
+    let text = (holding || body_rules).then(|| body_text(&raw, &codec::encodings(&parts.headers)));
+    let (body_text, body_changed) = match &text {
+        Some(t) if body_rules => js::apply_rules(t, &rules, "response-body"),
+        Some(t) => (t.clone(), false),
+        None => (String::new(), false),
+    };
+
+    let mut status_code = parts.status;
+    let mut message = status_message(&parts);
+    let (new_headers, new_body) = if holding {
+        let (shown, truncated) = js::cap_utf16(&body_text, MAX_BODY_TEXT);
+        let decision = shared
+            .hold(
+                json!({
+                    "id": format!("{id}:res"),
+                    "flowId": id,
+                    "kind": "response",
+                    "statusCode": status_code.as_u16(),
+                    "statusMessage": message,
+                    "headers": rewritten_headers.clone().unwrap_or(original_headers),
+                    "body": shown,
+                    "bodyTruncated": truncated,
+                    "startedAt": now_ms(),
+                }),
+                None,
+            )
+            .await;
+        if decision.drop {
+            report_aborted(&shared, &id);
+            return Err(Dropped);
+        }
+        let new_status = Decision::truthy_string(&decision.status_code)
+            .and_then(|s| s.trim().parse::<u16>().ok())
+            .and_then(|n| StatusCode::from_u16(n).ok());
+        if let Some(new_status) = new_status.filter(|s| *s != status_code) {
+            status_code = new_status;
+            message = new_status.canonical_reason().unwrap_or_default().to_owned();
+        }
+        if let Some(m) = Decision::truthy_string(&decision.status_message) {
+            message = m;
+        }
+        (
+            decision.headers_object().cloned().or(rewritten_headers),
+            decision.edited_body().or(body_changed.then_some(body_text)),
+        )
+    } else {
+        (rewritten_headers, body_changed.then_some(body_text))
+    };
+
+    let replaced = new_headers.is_some() || new_body.is_some();
+    if let Some(headers) = new_headers {
+        parts.headers = headers_from_object(&headers);
+    }
+    let out = match new_body {
+        Some(text) => encode_text(&text, &parts.headers),
+        None => raw,
+    };
+    if replaced {
+        fix_content_length(&mut parts.headers, out.len());
+    }
+    parts.status = status_code;
+    parts.extensions.remove::<hyper::ext::ReasonPhrase>();
+    if Some(message.as_str()) != status_code.canonical_reason()
+        && let Ok(phrase) = hyper::ext::ReasonPhrase::try_from(message.as_bytes())
+    {
+        parts.extensions.insert(phrase);
+    }
+
+    let mut headers_json = node_headers(&parts.headers);
+    let mut shown_message = message;
+    if h2_client {
+        strip_hop_by_hop(&mut parts.headers, true);
+        let mut h = Map::new();
+        h.insert(":status".into(), json!(status_code.as_u16().to_string()));
+        h.extend(node_headers(&parts.headers));
+        headers_json = h;
+        shown_message = String::new();
+    }
+    let captured = Captured::from_bytes(&out);
+    let mut update = json!({
+        "id": id,
+        "statusCode": status_code.as_u16(),
+        "statusMessage": shown_message,
+        "responseHeaders": headers_json,
+        "responseBodySize": captured.size,
+    });
+    if let Some(text) = captured.text() {
+        update["responseBody"] = Value::String(text);
+    }
+    update["completedAt"] = json!(now_ms());
+    shared.emit(ProxyEvent::FlowUpdate(update));
+    Ok(Response::from_parts(parts, full(out)))
 }
 
 /// Stream the origin's response back, reporting it when done.

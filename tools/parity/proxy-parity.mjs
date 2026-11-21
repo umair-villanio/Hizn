@@ -59,13 +59,17 @@ function makeCerts() {
 let originLog = [];
 const BIG = Buffer.concat(Array.from({ length: 2048 }, (_, i) => crypto.createHash('sha512').update(String(i)).digest()).flatMap((d) => [d, d, d, d, d, d, d, d, d, d, d, d, d, d, d, d]));
 const TEXT50K = Buffer.from('The quick brown fox jumps over the lazy dog. '.repeat(1200));
+// 1 MB of text with a marker past the 512 KB capture cap.
+const BIGTEXT = Buffer.from('lorem ipsum dolor sit amet '.repeat(38000) + 'MARKER at the end\n');
 
 function originHandler(req, res) {
   const chunks = [];
   req.on('data', (c) => chunks.push(c));
   req.on('end', () => {
     const body = Buffer.concat(chunks);
-    originLog.push({ method: req.method, url: req.url, rawHeaders: pairs(req.rawHeaders), bodySha: sha(body), bodyLen: body.length });
+    const entry = { method: req.method, url: req.url, rawHeaders: pairs(req.rawHeaders), bodySha: sha(body), bodyLen: body.length };
+    if (req.headers['content-encoding']) entry.decodedSha = decodedSha(body, req.headers['content-encoding']);
+    originLog.push(entry);
     const p = req.url.split('?')[0];
     switch (p) {
       case '/plain': res.writeHead(200, { 'Content-Type': 'text/plain' }); return res.end('hello parity\n');
@@ -92,6 +96,8 @@ function originHandler(req, res) {
         res.writeHead(200);
         return res.end('headers\n');
       case '/404': res.writeHead(404, { 'Content-Type': 'text/plain' }); return res.end('nope\n');
+      case '/bigtext': res.writeHead(200, { 'Content-Type': 'text/plain' }); return res.end(BIGTEXT);
+      case '/plain-cl': res.writeHead(200, { 'Content-Type': 'text/plain', 'Content-Length': 13 }); return res.end('hello parity\n');
       case '/slow-stream': {
         res.writeHead(200, { 'Content-Type': 'text/plain' });
         let i = 0; const t = setInterval(() => { if (res.destroyed) return clearInterval(t); res.write('.'); if (++i === 15) { clearInterval(t); res.end(); } }, 200);
@@ -139,6 +145,14 @@ function frame(opcode, payload, mask) {
   return Buffer.concat([Buffer.from(head), key, out]);
 }
 const pairs = (raw) => { const out = []; for (let i = 0; i < raw.length; i += 2) out.push([raw[i], raw[i + 1]]); return out; };
+function decodedSha(buf, encoding) {
+  try {
+    const e = String(encoding).toLowerCase();
+    const d = e.includes('gzip') ? zlib.gunzipSync(buf) : e.includes('br') ? zlib.brotliDecompressSync(buf)
+      : e.includes('deflate') ? zlib.inflateSync(buf) : buf;
+    return sha(d);
+  } catch { return 'undecodable'; }
+}
 const listen = (server) => new Promise((r) => server.listen(0, '127.0.0.1', () => r(server.address().port)));
 
 // --------------------------------------------------------------- backends
@@ -185,7 +199,11 @@ function curl(backend, scenario) {
       if ((scenario.curl || []).includes('-I')) body = Buffer.from(body.toString('latin1').replace(/^date:.*\r?\n/im, ''), 'latin1');
       // The proxy's own port appears in loop responses; it differs per backend.
       body = Buffer.from(body.toString('latin1').replaceAll(String(backend.proxyPort), '<proxy-port>'), 'latin1');
-      resolve({ curlExit: code, status: m ? Number(m[1]) : null, reason: m ? m[2] : null, headers, bodySha: sha(body), bodyLen: body.length });
+      const enc = headers.find(([k]) => k === 'content-encoding')?.[1];
+      const result = { curlExit: code, status: m ? Number(m[1]) : null, reason: m ? m[2] : null, headers, bodySha: sha(body), bodyLen: body.length };
+      // Compressed bodies: also compare what they decompress to.
+      if (enc) result.decodedSha = decodedSha(body, enc);
+      resolve(result);
     });
   });
 }
@@ -229,6 +247,47 @@ function wsClient(backend, { secure, host, port }) {
   });
 }
 
+// Real `ws` library (from the Node checkout) for permessage-deflate traffic.
+async function wsLib() {
+  const { createRequire } = await import('node:module');
+  return createRequire(path.join(NODE_DIR, 'package.json'))('ws');
+}
+
+/** wss:// through the proxy: CONNECT, then TLS trusting the Hizn CA. */
+class TunnelAgent extends https.Agent {
+  constructor(proxyPort) { super({ keepAlive: false }); this.proxyPort = proxyPort; }
+  createConnection(opts, cb) {
+    const sock = net.connect(this.proxyPort, '127.0.0.1', () => sock.write(`CONNECT ${opts.host}:${opts.port} HTTP/1.1\r\nHost: ${opts.host}:${opts.port}\r\n\r\n`));
+    sock.once('error', cb);
+    sock.once('data', () => cb(null, tls.connect({ socket: sock, servername: opts.servername || opts.host, ca: fs.readFileSync(HIZN_CA) })));
+  }
+}
+
+/** Compressed session: two texts (context takeover), binary, a fragmented
+ *  message, a 100 KB message, then close 4001. */
+async function wsDeflateSession(backend, port) {
+  const WebSocket = await wsLib();
+  return new Promise((resolve) => {
+    const ws = new WebSocket(`wss://localhost:${port}/deflate`, { agent: new TunnelAgent(backend.proxyPort), perMessageDeflate: { threshold: 0 }, headers: { 'X-Parity': 'ws-deflate' } });
+    const got = [];
+    const plan = [
+      () => ws.send('compressed hello'),
+      () => ws.send('compressed hello again, compressed hello again'),
+      () => ws.send(Buffer.from([0, 1, 2, 250, 255])),
+      () => { ws.send('frag-one ', { fin: false }); ws.send('frag-two', { fin: true }); },
+      () => ws.send('x'.repeat(100 * 1024)),
+      () => ws.close(4001, 'bye'),
+    ];
+    let step = 0;
+    const next = () => plan[step++]?.();
+    ws.on('open', () => { got.push({ negotiated: ws.extensions }); next(); });
+    ws.on('message', (data, isBinary) => { got.push({ echo: isBinary ? 'binary' : String(data).slice(0, 20), size: data.length }); next(); });
+    ws.on('close', (code) => { got.push({ close: code }); resolve(got); });
+    ws.on('error', (e) => { got.push({ error: e.message }); resolve(got); });
+    setTimeout(() => resolve(got), 8000);
+  });
+}
+
 // HTTP/2-only client (gRPC-style: offers only h2) through a CONNECT tunnel.
 function h2Client(backend, { host, port, path: reqPath, token }) {
   return new Promise((resolve) => {
@@ -265,10 +324,12 @@ const KNOWN = {
   'https-ip': [[/./, "Node's leaf cert has no IP SAN, so clients reject HTTPS-by-IP; Rust's includes it (improvement)"]],
   'client-abort': [[/^client\./, 'Node buffers each whole response before sending any of it; Rust streams (improvement: SSE / long responses work)']],
   'ws': [
-    [/flow\.(wsMessages|wsCloseCode)/, 'WebSocket frame history is Phase 3'],
     [/sec-websocket-protocol|origin: .*Sec-WebSocket-Protocol/i, 'Node forwards only the first offered subprotocol; Rust passes the header through unchanged (improvement)'],
   ],
   'tls-untrusted-origin': [[/responseBody|bodySha|bodyLen|responseBodySize/, 'TLS failure wording differs (OpenSSL vs rustls)']],
+  // Only the compressed bytes may differ: decodedSha is still compared.
+  'rule-resp-body-gzip': [[/^(client\.(bodySha|bodyLen)|flow\.responseBody(Size)?):/, 're-compressed bytes differ (Rust miniz vs Node zlib, both at level 1); the decompressed content is checked identical']],
+  'rule-bigtext': [[/^(client\.(bodySha|bodyLen)|flow\.responseBody(Size)?):/, 'rules see the whole body: Node only looked at the first 512 KB, so it missed the marker past that (and cut bodies to 512 KB when a rule matched earlier); Rust replaces it (fix)']],
 };
 KNOWN.wss = KNOWN.ws;
 KNOWN['h2-only'] = [[/^origin: .*\["Connection","keep-alive"\]/, 'Node adds "Connection: keep-alive" when converting HTTP/2 to HTTP/1.1; Rust omits it, since a connection header would break HTTP/2-capable origins']];
@@ -315,6 +376,8 @@ function diff(a, b, at = '') {
 function normFlow(f) {
   if (!f) return null;
   const o = {}; for (const [k, v] of Object.entries(scrub(f))) if (!STRIP_FLOW.has(k)) o[k] = v;
+  // Each message repeats the (random) flow id and a timestamp.
+  if (Array.isArray(o.wsMessages)) o.wsMessages = o.wsMessages.map(({ id, at, ...m }) => m);
   if (o.responseBody && o.responseBody.length > 200) o.responseBody = `<${o.responseBody.length} chars sha ${sha(Buffer.from(o.responseBody))}>`;
   if (o.requestBody && o.requestBody.length > 200) o.requestBody = `<${o.requestBody.length} chars sha ${sha(Buffer.from(o.requestBody))}>`;
   return o;
@@ -401,6 +464,7 @@ async function main() {
       (hit ? known : unknown).push(hit ? `${l}\n      ↳ known: ${hit[1]}` : l);
     }
     if (process.env.DUMP === name) console.log(JSON.stringify({ node, rust }, null, 1));
+    if (process.env.DUMP_NODE) console.log(`----- node truth: ${name}\n` + JSON.stringify({ ...node, flow: normFlow(node.flow) }));
     results.push({ name, ok: unknown.length === 0, known: known.length });
     console.log(`${unknown.length ? 'DIFF ' : known.length ? 'SAME*' : 'SAME '} ${name}`);
     for (const l of unknown) console.log('  ' + l);
@@ -413,7 +477,7 @@ async function main() {
       originLog = [];
       const client = await curl(b, s);
       await sleep(s.settle ?? 350);
-      run[b.name] = { client, origin: originLog.map(({ method, url, rawHeaders, bodySha, bodyLen }) => ({ method, url, rawHeaders, bodySha, bodyLen })), flow: await flowFor(b, s.name) };
+      run[b.name] = { client, origin: originLog.map(({ method, url, rawHeaders, bodySha, bodyLen, decodedSha }) => ({ method, url, rawHeaders, bodySha, bodyLen, decodedSha })), flow: await flowFor(b, s.name) };
     }
     record(s.name, run.node, run.rust);
   }
@@ -429,6 +493,160 @@ async function main() {
       run[b.name] = { client: { ...ws, headers: [] }, origin: originLog.map(({ method, url, rawHeaders }) => ({ method, url, rawHeaders })), flow: await flowFor(b, name) };
     }
     record(name, run.node, run.rust);
+  }
+
+  // ------------------------------------------------ Phase 3: rules / scope / intercept
+  const call3 = (b, method, p, body) => fetch(b.api + p, {
+    method, headers: body !== undefined ? { 'Content-Type': 'application/json' } : {}, body: body !== undefined ? JSON.stringify(body) : undefined,
+  }).then(async (r) => ({ status: r.status, body: await r.json().catch(() => null) }));
+  const resetFeatures = async (b) => {
+    await call3(b, 'POST', '/rules', { rules: [] });
+    await call3(b, 'POST', '/intercept/config', { enabled: false, requests: true, responses: false });
+    await call3(b, 'POST', '/scope', { enabled: false, hosts: [] });
+  };
+  const nextHeld = async (b, kind, ms = 6000) => {
+    const end = Date.now() + ms;
+    while (Date.now() < end) {
+      const item = (await call3(b, 'GET', '/intercept')).body?.pending?.find((i) => !kind || i.kind === kind);
+      if (item) return item;
+      await sleep(40);
+    }
+    return null;
+  };
+  const normItem = (it) => it && Object.fromEntries(Object.entries(scrub(it)).filter(([k]) => k !== 'startedAt')
+    .map(([k, v]) => [k, k === 'id' || k === 'flowId' ? (String(v).endsWith(':res') ? '<id>:res' : '<id>') : v]));
+  const rules = (...list) => (b) => call3(b, 'POST', '/rules', { rules: list });
+  const R = (part, match, replace, extra = {}) => ({ id: `r-${part}`, enabled: true, part, match, replace, ...extra });
+  const interceptOn = (cfg = { enabled: true, requests: true, responses: false }) => (b) => call3(b, 'POST', '/intercept/config', cfg);
+  const resolve = (b, body) => call3(b, 'POST', '/intercept/resolve', body);
+  const gzBody = path.join(TMP, 'req.gz'); fs.writeFileSync(gzBody, zlib.gzipSync('hello gzip request body'));
+
+  const features = [
+    { name: 'rule-req-header', url: `${S}/plain`, curl: ['-H', 'X-Tag: alpha'], setup: rules(R('request-header', 'x-tag: alpha', 'x-tag: beta')) },
+    { name: 'rule-req-header-multi', url: `${S}/plain`, curl: ['-H', 'X-A: 1', '-H', 'X-A: 2'], setup: rules(R('request-header', 'x-a: 2', 'x-b: 3')) },
+    { name: 'rule-req-url', url: `${S}/plain?q=1`, setup: rules(R('request-url', '/plain', '/json')) },
+    { name: 'rule-req-body', url: `${S}/echo`, curl: ['-X', 'POST', '-H', 'Content-Type: text/plain', '--data-binary', 'hello body'], setup: rules(R('request-body', 'hello', 'HELLO')) },
+    { name: 'rule-req-body-gzip', url: `${S}/echo`, curl: ['-X', 'POST', '-H', 'Content-Type: text/plain', '-H', 'Content-Encoding: gzip', '--data-binary', '@' + gzBody], setup: rules(R('request-body', 'hello', 'HELLO')) },
+    { name: 'rule-resp-header', url: `${S}/plain`, setup: rules(R('response-header', 'content-type: text/plain', 'content-type: text/x-changed')) },
+    { name: 'rule-resp-body', url: `${S}/plain`, setup: rules(R('response-body', 'hello parity', 'HI PARITY')) },
+    { name: 'rule-resp-body-gzip', url: `${S}/gzip`, setup: rules(R('response-body', 'quick', 'QUICK')) },
+    { name: 'rule-js-replacement', url: `${S}/plain`, setup: rules(R('response-body', '(hello) (parity)', '[$2|$1|$&|$$|$`|$\'|$3]')) },
+    { name: 'rule-literal', url: `${S}/plain`, setup: rules(R('response-body', 'o', '0', { regex: false })) },
+    { name: 'rule-invalid-regex', url: `${S}/plain`, setup: rules(R('response-body', '([', 'x')) },
+    { name: 'rule-disabled', url: `${S}/plain`, setup: rules({ ...R('response-body', 'hello', 'BYE'), enabled: false }) },
+    { name: 'rule-bigtext', url: `${S}/bigtext`, setup: rules(R('response-body', 'MARKER', 'FOUND')) },
+    { name: 'rule-req-url-host', url: `http://localhost:${httpPort}/plain`, setup: rules(R('request-url', 'localhost', '127.0.0.1')) },
+    { name: 'rule-resp-body-cl', url: `${S}/plain-cl`, setup: rules(R('response-body', 'hello', 'goodbye')) },
+    { name: 'scope-out-of-scope', url: `${H}/plain`,
+      setup: async (b) => { await interceptOn()(b); await call3(b, 'POST', '/scope', { enabled: true, hosts: ['localhost'] }); } },
+    { name: 'scope-in-scope', url: `${S}/plain`,
+      setup: async (b) => { await interceptOn()(b); await call3(b, 'POST', '/scope', { enabled: true, hosts: ['*.localhost', 'localhost'] }); },
+      interceptor: async (b) => { const it = await nextHeld(b, 'request'); return { items: [normItem(it)], resolved: [await resolve(b, { id: it?.id, action: 'forward' })] }; } },
+    { name: 'hold-forward', url: `${S}/plain`, setup: interceptOn(),
+      interceptor: async (b) => { const it = await nextHeld(b, 'request'); return { items: [normItem(it)], resolved: [await resolve(b, { id: it?.id, action: 'forward' })] }; } },
+    { name: 'hold-edit', url: `${S}/echo`, curl: ['-X', 'POST', '-H', 'Content-Type: text/plain', '--data-binary', 'original body'], setup: interceptOn(),
+      interceptor: async (b) => {
+        const it = await nextHeld(b, 'request');
+        return { items: [normItem(it)], resolved: [await resolve(b, { id: it?.id, action: 'forward', headers: { ...it?.headers, 'x-edited': 'yes' }, bodyEdited: true, body: 'edited body!', method: 'PUT', url: it?.url })] };
+      } },
+    { name: 'hold-drop', url: `${S}/plain`, setup: interceptOn(),
+      interceptor: async (b) => { const it = await nextHeld(b, 'request'); return { items: [normItem(it)], resolved: [await resolve(b, { id: it?.id, action: 'drop' })] }; } },
+    { name: 'hold-response-edit', url: `${S}/plain`, setup: interceptOn(),
+      interceptor: async (b) => {
+        const req = await nextHeld(b, 'request');
+        const r1 = await resolve(b, { id: req?.id, action: 'forward', interceptResponse: true });
+        const res = await nextHeld(b, 'response');
+        const r2 = await resolve(b, { id: res?.id, action: 'forward', statusCode: 201, statusMessage: 'Made Up', headers: { ...res?.headers, 'x-resp': '1' }, bodyEdited: true, body: 'response edited' });
+        return { items: [normItem(req), normItem(res)], resolved: [r1, r2] };
+      } },
+    { name: 'resp-drop', url: `${S}/plain`, setup: interceptOn({ enabled: true, requests: false, responses: true }),
+      interceptor: async (b) => { const it = await nextHeld(b, 'response'); return { items: [normItem(it)], resolved: [await resolve(b, { id: it?.id, action: 'drop' })] }; } },
+    { name: 'config-off-releases', url: `${S}/plain`, setup: interceptOn(),
+      interceptor: async (b) => { const it = await nextHeld(b, 'request'); return { items: [normItem(it)], config: await call3(b, 'POST', '/intercept/config', { enabled: false, requests: true, responses: false }) }; } },
+    { name: 'api-intercept-quirks', apiOnly: async (b) => ({
+        missingId: await resolve(b, {}), unknownId: await resolve(b, { id: 'nope' }),
+        partialConfig: await call3(b, 'POST', '/intercept/config', { enabled: true }), get: await call3(b, 'GET', '/intercept'),
+      }) },
+    { name: 'api-scope-quirks', apiOnly: async (b) => ({
+        set: await call3(b, 'POST', '/scope', { enabled: 'yes', hosts: [' a.com ', '', 5, null, '*.b.com'] }),
+        keepHosts: await call3(b, 'POST', '/scope', { enabled: true }), get: await call3(b, 'GET', '/scope'),
+      }) },
+    { name: 'api-rules-quirks', apiOnly: async (b) => ({
+        set: await call3(b, 'POST', '/rules', { rules: [{ part: 'request-url', match: 'a' }, { match: 'x' }, null, { part: 'response-body', match: null }, { part: 'response-body', match: 0, extra: 'kept' }] }),
+        get: await call3(b, 'GET', '/rules'), notArray: await call3(b, 'POST', '/rules', { rules: 'nope' }),
+      }) },
+  ].filter((s) => !ONLY || ONLY.has(s.name) || ONLY.has('phase3'));
+
+  for (const s of features) {
+    const run = {};
+    for (const b of [nodeB, rustB]) {
+      await resetFeatures(b);
+      if (s.apiOnly) { run[b.name] = { client: { headers: [] }, origin: [], flow: null, extra: await s.apiOnly(b) }; await resetFeatures(b); continue; }
+      if (s.setup) await s.setup(b);
+      originLog = [];
+      const clientP = curl(b, s);
+      const extra = s.interceptor ? await s.interceptor(b) : {};
+      const client = await clientP;
+      await sleep(s.settle ?? 400);
+      extra.pendingAfter = (await call3(b, 'GET', '/intercept')).body?.pending?.length ?? null;
+      run[b.name] = { client, origin: originLog.map(({ method, url, rawHeaders, bodySha, bodyLen, decodedSha }) => ({ method, url, rawHeaders, bodySha, bodyLen, decodedSha })), flow: await flowFor(b, s.name), extra };
+      await resetFeatures(b);
+    }
+    record(s.name, run.node, run.rust);
+  }
+
+  // The live event stream the UI consumes, through a whole intercept cycle.
+  if (!ONLY || ONLY.has('events') || ONLY.has('phase3')) {
+    const normEvent = (m) => {
+      const pick = (o) => o && Object.fromEntries(Object.entries(scrub(o)).filter(([k]) => !['id', 'flowId', 'startedAt', 'completedAt', 'at'].includes(k)));
+      switch (m.type) {
+        case 'intercept': return { type: m.type, item: pick(m.item) };
+        case 'intercept-closed': return { type: m.type, hasId: !!m.ref?.id };
+        case 'flow': return { type: m.type, url: m.flow.url };
+        case 'flow-update': return { type: m.type, keys: Object.keys(m.update).filter((k) => !['id', 'completedAt'].includes(k)) };
+        default: return { type: m.type, ...pick(Object.fromEntries(Object.entries(m).filter(([k]) => k !== 'type'))) };
+      }
+    };
+    const run = {};
+    for (const b of [nodeB, rustB]) {
+      await resetFeatures(b);
+      const events = [];
+      const ws = new WebSocket(b.api.replace('http', 'ws').replace('/api', '/ws'));
+      await new Promise((r) => { ws.onopen = r; });
+      await sleep(300); // skip the hello snapshot
+      ws.onmessage = (e) => events.push(normEvent(JSON.parse(e.data)));
+      await call3(b, 'POST', '/scope', { enabled: true, hosts: ['localhost'] });
+      await call3(b, 'POST', '/intercept/config', { enabled: true, requests: true, responses: false });
+      const clientP = curl(b, { name: 'events', url: `${S}/plain` });
+      const held = await nextHeld(b, 'request');
+      await resolve(b, { id: held?.id, action: 'forward', interceptResponse: true });
+      const res = await nextHeld(b, 'response');
+      await resolve(b, { id: res?.id, action: 'forward' });
+      await clientP;
+      await call3(b, 'POST', '/intercept/config', { enabled: false, requests: true, responses: false });
+      await sleep(400);
+      ws.close();
+      await resetFeatures(b);
+      run[b.name] = { client: { headers: [] }, origin: [], flow: null, extra: { events } };
+    }
+    record('events', run.node, run.rust);
+  }
+
+  // WebSockets with permessage-deflate, against a real `ws` echo server.
+  if (!ONLY || ONLY.has('ws-deflate') || ONLY.has('phase3')) {
+    const WebSocket = await wsLib();
+    const deflateServer = https.createServer({ key: certs.leafKey, cert: certs.leafCert });
+    new WebSocket.WebSocketServer({ server: deflateServer, perMessageDeflate: { threshold: 0 } })
+      .on('connection', (sock) => sock.on('message', (data, isBinary) => sock.send(data, { binary: isBinary })));
+    const deflatePort = await listen(deflateServer);
+    const run = {};
+    for (const b of [nodeB, rustB]) {
+      const session = await wsDeflateSession(b, deflatePort);
+      await sleep(600);
+      run[b.name] = { client: { headers: [], session }, origin: [], flow: await flowFor(b, 'ws-deflate') };
+    }
+    record('ws-deflate', run.node, run.rust);
+    deflateServer.close();
   }
 
   // HTTP/2-only client against an HTTP/1.1-only origin.
