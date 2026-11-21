@@ -19,6 +19,7 @@ path = "src/main.rs"
 hizn-proxy = { path = "../hizn-proxy" }
 hizn-devices = { path = "../hizn-devices" }
 hizn-tools = { path = "../hizn-tools" }
+hizn-analyzer = { path = "../hizn-analyzer" }
 axum.workspace = true
 tokio.workspace = true
 tower-http.workspace = true

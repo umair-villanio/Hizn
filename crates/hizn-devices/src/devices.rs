@@ -167,6 +167,44 @@ impl Devices {
         Ok(())
     }
 
+    /// Installed package names (`pm list packages`), third-party only by
+    /// default, sorted.
+    pub async fn list_installed_packages(
+        &self,
+        serial: &str,
+        third_party_only: bool,
+    ) -> Result<Vec<String>, AdbError> {
+        let cmd = if third_party_only {
+            "pm list packages -3"
+        } else {
+            "pm list packages"
+        };
+        let out = self.adb.shell(serial, cmd).await?;
+        let mut pkgs: Vec<String> = out
+            .lines()
+            .map(|l| l.trim().trim_start_matches("package:").to_owned())
+            .filter(|l| !l.is_empty())
+            .collect();
+        pkgs.sort();
+        Ok(pkgs)
+    }
+
+    /// On-device APK path(s) for a package (`pm path`), base + any splits.
+    pub async fn apk_paths(&self, serial: &str, pkg: &str) -> Result<Vec<String>, AdbError> {
+        if !pkg
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'.')
+        {
+            return Err(AdbError::Failed("Invalid package name".into()));
+        }
+        let out = self.adb.shell(serial, &format!("pm path {pkg}")).await?;
+        Ok(out
+            .lines()
+            .map(|l| l.trim().trim_start_matches("package:").to_owned())
+            .filter(|l| !l.is_empty())
+            .collect())
+    }
+
     /// Install the CA: into the system trust store when rooted (plus the
     /// Android 14+ APEX path), otherwise staged on `/sdcard` for manual install.
     /// Returns which strategy was used.

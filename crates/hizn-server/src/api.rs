@@ -28,9 +28,6 @@ pub const PENDING: &[(&str, &str, u8)] = &[
     ("POST", "/repeater/ws/open", 5),
     ("POST", "/repeater/ws/send", 5),
     ("POST", "/repeater/ws/close", 5),
-    ("POST", "/analyzer/scan", 5),
-    ("GET", "/analyzer/packages", 5),
-    ("POST", "/analyzer/scan-device", 5),
     ("GET", "/mcp/info", 5),
     ("GET", "/plugins", 5),
     ("POST", "/plugins", 5),
@@ -63,6 +60,9 @@ pub const PORTED: &[(&str, &str)] = &[
     ("POST", "/repeater/send"),
     ("POST", "/intruder/start"),
     ("POST", "/intruder/stop"),
+    ("POST", "/analyzer/scan"),
+    ("GET", "/analyzer/packages"),
+    ("POST", "/analyzer/scan-device"),
 ];
 
 pub fn router() -> Router<AppState> {
@@ -88,6 +88,13 @@ pub fn router() -> Router<AppState> {
     by_path.insert("/repeater/send", post(repeater_send));
     by_path.insert("/intruder/start", post(intruder_start));
     by_path.insert("/intruder/stop", post(intruder_stop));
+    // The APK is POSTed as the raw body; lift the body limit to 600 MB.
+    by_path.insert(
+        "/analyzer/scan",
+        post(analyzer_scan).layer(axum::extract::DefaultBodyLimit::max(600 * 1024 * 1024)),
+    );
+    by_path.insert("/analyzer/packages", get(analyzer_packages));
+    by_path.insert("/analyzer/scan-device", post(analyzer_scan_device));
 
     for &(method, path, phase) in PENDING {
         let filter = match method {
@@ -287,6 +294,132 @@ async fn set_scope(State(state): State<AppState>, JsonBody(body): JsonBody) -> J
             .set_scope(body.get("enabled"), body.get("hosts"))
             .to_json(),
     )
+}
+
+// --------------------------------------------------------------- analyzer
+
+async fn analyzer_scan(State(_state): State<AppState>, request: Request) -> Response {
+    // The display name comes from the ?name= query.
+    let name = request
+        .uri()
+        .query()
+        .and_then(|q| form_urlencoded_get(q, "name"));
+    let bytes = match axum::body::to_bytes(request.into_body(), 600 * 1024 * 1024).await {
+        Ok(b) => b,
+        Err(e) => return error(StatusCode::BAD_REQUEST, e.to_string()),
+    };
+    if bytes.is_empty() {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "Empty upload — POST the .apk as the raw request body.",
+        );
+    }
+    // Analysis is CPU-bound binary parsing; keep it off the async executor.
+    let report = tokio::task::spawn_blocking(move || {
+        hizn_analyzer::analyze_to_json(&bytes, name.as_deref())
+    })
+    .await
+    .unwrap_or_else(|_| json!({ "errors": ["analysis task failed"] }));
+    Json(report).into_response()
+}
+
+async fn analyzer_packages(State(state): State<AppState>, request: Request) -> Response {
+    let query = request.uri().query().unwrap_or("");
+    let serial = form_urlencoded_get(query, "serial").unwrap_or_default();
+    if serial.is_empty() {
+        return error(StatusCode::BAD_REQUEST, "serial is required");
+    }
+    // `all=1` includes system packages (Node checked `all !== '1'` for the flag).
+    let third_party_only = form_urlencoded_get(query, "all").as_deref() != Some("1");
+    match state
+        .orchestrator
+        .devices()
+        .list_installed_packages(&serial, third_party_only)
+        .await
+    {
+        Ok(packages) => Json(json!({ "packages": packages })).into_response(),
+        Err(e) => error(StatusCode::BAD_REQUEST, e.to_string()),
+    }
+}
+
+async fn analyzer_scan_device(State(state): State<AppState>, JsonBody(body): JsonBody) -> Response {
+    let serial = string_field(&body, "serial").unwrap_or_default();
+    let pkg = string_field(&body, "package").unwrap_or_default();
+    if serial.is_empty() || pkg.is_empty() {
+        return error(StatusCode::BAD_REQUEST, "serial and package are required");
+    }
+    let devices = state.orchestrator.devices();
+    let paths = match devices.apk_paths(&serial, &pkg).await {
+        Ok(p) if !p.is_empty() => p,
+        Ok(_) => {
+            return error(
+                StatusCode::NOT_FOUND,
+                format!("No APK path found for {pkg}"),
+            );
+        }
+        Err(e) => return error(StatusCode::BAD_REQUEST, e.to_string()),
+    };
+    // Prefer base.apk for split installs.
+    let base = paths
+        .iter()
+        .find(|p| p.ends_with("base.apk"))
+        .cloned()
+        .unwrap_or_else(|| paths[0].clone());
+    let bytes = match devices.adb().pull_bytes(&serial, &base).await {
+        Ok(b) if !b.is_empty() => b,
+        _ => {
+            return error(
+                StatusCode::BAD_REQUEST,
+                "Failed to pull the APK from the device",
+            );
+        }
+    };
+    let name = format!("{pkg}.apk");
+    let report =
+        tokio::task::spawn_blocking(move || hizn_analyzer::analyze_to_json(&bytes, Some(&name)))
+            .await
+            .unwrap_or_else(|_| json!({ "errors": ["analysis task failed"] }));
+    Json(report).into_response()
+}
+
+/// First value of `key` in a `application/x-www-form-urlencoded` query string.
+fn form_urlencoded_get(query: &str, key: &str) -> Option<String> {
+    for pair in query.split('&') {
+        let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
+        if k == key {
+            return Some(percent_decode(v));
+        }
+    }
+    None
+}
+
+/// Minimal percent-decode (`+` → space) for query values.
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'%' if i + 2 < bytes.len() => {
+                if let Ok(byte) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
+                    out.push(byte);
+                    i += 3;
+                    continue;
+                }
+                out.push(b'%');
+                i += 1;
+            }
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            c => {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 // ----------------------------------------------------- repeater / intruder

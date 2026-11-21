@@ -1,0 +1,19 @@
+[package]
+name = "hizn-analyzer"
+description = "Hizn static APK analyzer: a light, MobSF-style SAST in pure Rust."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+flate2 = "1"
+sha1 = "0.11"
+sha2 = "0.11"
+regex = "1"
+x509-parser = "0.18"
+cms = "0.3.0-rc.2"
+der = "0.8"
