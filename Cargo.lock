@@ -1812,6 +1812,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "hizn-mcp"
+version = "0.2.0"
+dependencies = [
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "hizn-proxy"
 version = "0.2.0"
 dependencies = [

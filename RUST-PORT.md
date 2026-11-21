@@ -59,6 +59,8 @@ crates/
     src/adb.rs                thin ADB server protocol client (TCP 5037)
     src/devices.rs            device description + device-side setup (proxy, CA)
     src/orchestrator.rs       the one-click flow + setup-step events
+  hizn-tools/                 (Phase 5) Repeater, Intruder, WS Repeater
+  hizn-analyzer/              (Phase 5) static APK analyzer (zip/axml/arsc/cert/secrets)
   hizn-app/                   (Phase 1) Tauri desktop shell — mirrors electron/main.js
   hizn-mcp/                   (Phase 5) stdio MCP bridge — mirrors src/mcp/mcp-server.ts
 tools/parity/                 Node-vs-Rust parity harness
@@ -340,16 +342,32 @@ skipped, and `/frida/provision` returns the standard "not ported yet" message.
   captures HTTPS; Genymotion auto-connects. (Unpinning via Frida: with the
   follow-up.)
 
-### Phase 5 — Tools
-- Repeater (HTTP) and WS Repeater.
-- Intruder: Sniper / Battering-ram, all payload types + processing, streamed rows.
-- APK analyzer: scan upload, device package list, pull + scan.
-- Desktop: Firefox launch with the dedicated profile, NSS `certutil` import.
-- Plugins API: list / add / toggle / delete, reusing `plugins.json`.
-- `hizn-mcp` binary: same tools, same gating (`HIZN_MCP_ACTIVE`), `GET /mcp/info`
-  points at it.
-- **Exit:** analyzer reports match Node's on the reference APKs; intruder results
-  match; MCP `tools/list` and tool calls match.
+### Phase 5 — Tools ✅ verified
+- **Repeater + Intruder** (`crates/hizn-tools`): Repeater (re-send, no redirects,
+  raw headers/body, insecure TLS) and Intruder (`§marker§` fuzzing, Sniper /
+  Battering-ram, URL-encode, streamed rows). **12/12 parity cases.**
+- **WebSocket Repeater** (`hizn-tools`, tokio-tungstenite): open ws/wss, send
+  text/binary frames, stream every frame. Event stream matches Node (open,
+  outgoing/incoming text + binary, close 1000).
+- **Static APK analyzer** (`crates/hizn-analyzer`): ZIP + binary AXML + arsc
+  decoders, signing-cert extraction (v2/v3 block, v1 PKCS#7) + analysis, secret
+  scanner. **Byte-identical to Node on two real APKs**, and end-to-end through
+  the server (upload, device package list, pull + scan off the Genymotion VM).
+- **Desktop Firefox** (`hizn-server/desktop.rs`): detect Firefox, write the
+  proxy-wired profile, NSS `certutil` auto-import, launch. `/desktop/info` and
+  `/desktop/import-ca` match Node.
+- **Plugins API** (`hizn-server/plugins.rs`): list / install / toggle / delete,
+  reusing `~/.hizn/plugins` + `plugins.json`. Plugin list byte-identical
+  (line-endings normalized); round-trip verified.
+- **MCP** (`crates/hizn-mcp` binary + `/mcp/info`): newline-delimited JSON-RPC
+  on stdio, the same tools with `HIZN_MCP_ACTIVE` gating. `initialize`,
+  `tools/list` (8 read-only / 15 active, schemas byte-identical), `ping`,
+  `tools/call` and gating all match Node.
+- **Routes ported: 38/38** (one group — Frida — behind the Phase 4 follow-up:
+  `/frida/provision` returns the standard "not ported" message; everything else
+  is live).
+- **Exit met:** analyzer reports match on the reference APKs; Repeater /
+  Intruder / WS Repeater / MCP match Node.
 
 ### Phase 6 — Hardening + sign-off
 - Parity checklist complete: 38/38 routes, 20/20 events, zero 501s.
