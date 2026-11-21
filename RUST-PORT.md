@@ -55,6 +55,10 @@ crates/
     src/upstream.rs           origin connections, Burp chaining, trust store
     src/headers.rs            mockttp-style header objects for flows
     src/capture.rs            streaming body capture
+  hizn-devices/               (Phase 4) ADB client + one-click orchestrator — replaces adbkit
+    src/adb.rs                thin ADB server protocol client (TCP 5037)
+    src/devices.rs            device description + device-side setup (proxy, CA)
+    src/orchestrator.rs       the one-click flow + setup-step events
   hizn-app/                   (Phase 1) Tauri desktop shell — mirrors electron/main.js
   hizn-mcp/                   (Phase 5) stdio MCP bridge — mirrors src/mcp/mcp-server.ts
 tools/parity/                 Node-vs-Rust parity harness
@@ -294,14 +298,47 @@ node tools/parity/proxy-parity.mjs --node ../droidmitm --rust target/debug/hizn.
 | Re-compressed body bytes | Node zlib, level 1 | miniz, level 1 | different DEFLATE encoders pick different matches; the harness checks the *decompressed* content is identical |
 | Header names a user types in an edit | sent with the typed case | sent lowercase | HTTP header names are case-insensitive |
 
-### Phase 4 — Devices + Frida
-- ADB: device list, global proxy, CA push (rooted + APEX path, non-rooted staging),
-  `adb reverse`, Genymotion auto-connect, connect/disconnect + `connections`.
-- Orchestrator: one-click flow with the same `setup-step` sequence.
-- Frida: spike both client options, pick one; provision frida-server by ABI;
-  CA injection + unpinning with the unchanged `scripts/frida/` scripts.
-- **Exit:** one-click connect on a real device captures HTTPS; unpinning works
-  on a pinned app; Genymotion auto-connects.
+### Phase 4 — Devices + one-click ✅ verified (Frida injection deferred)
+- **`crates/hizn-devices`**: a thin ADB client (the ADB server protocol on TCP
+  5037 — device list, shell, sync push/pull, reverse tunnels, TCP connect),
+  replacing `@devicefarmer/adbkit`. No adbkit, no bundled ADB binary; it drives
+  the user's own `adb` server.
+- **Device description**: same `DeviceInfo` JSON — model, Android version, SDK,
+  ABI, manufacturer, hardware, root, frida-running, and the emulator /
+  Genymotion fingerprinting. Verified byte-identical to Node on a real
+  Genymotion VM (rooted Android 11, vbox86).
+- **Device setup**: global-proxy set/clear, CA install (system store +
+  Android 14+ APEX path when rooted, `/sdcard/Download/hizn-ca.crt` staging
+  otherwise), `adb reverse`.
+- **Orchestrator** (`orchestrator.rs`): the one-click flow with the same five
+  `setup-step` events (device → proxy → ip → ca → route), host-IP detection in
+  Node's preference order, Genymotion auto-connect, connect / disconnect +
+  `connections`. The proxy bits come through a `ProxyControl` trait the server
+  implements, so the crate stays independent of `hizn-proxy`.
+- **Routes ported (20/38):** `/devices`, `/connections`, `/connect`,
+  `/disconnect`, `/connect/genymotion`, with the `setup-step` and `connections`
+  events. (`/frida/provision` stays a stub — see below.)
+- **Verified end to end on the Genymotion VM:** the `/devices` enrichment, the
+  one-click `/connect` (CA into the system store, proxy set to
+  `127.0.0.1:8000` over the reverse tunnel, all five steps `ok`, device tracked
+  in `/connections`), **HTTPS from the device's browser decrypted into the flow
+  list** (`example.com`, its `s.js`, the connectivity checks), and `/disconnect`
+  clearing the device proxy. The no-device error shapes (`/connect` with a bad
+  serial → 400, `/connect/genymotion` with no VM → 404) match Node.
+
+**Deferred to a Phase 4 follow-up — Frida.** The Node backend injects the
+`scripts/frida/` CA + certificate-unpinning scripts by speaking the Frida
+control protocol (D-Bus) over an ADB tunnel to an on-device `frida-server`
+(`frida-js`), and provisions `frida-server` by downloading the right-ABI build.
+That transport is the one piece without a clean pure-Rust equivalent, so it's a
+deliberate choice: (a) port the Frida protocol to Rust, (b) use a native
+`frida` devkit binding, or (c) a small bundled helper that speaks it. Until
+then, one-click works fully for rooted devices and emulators (system-store CA —
+the common Genymotion path); `fridaTarget` is accepted but the Frida step is
+skipped, and `/frida/provision` returns the standard "not ported yet" message.
+- **Exit (met for the device tier):** one-click connect on a real device
+  captures HTTPS; Genymotion auto-connects. (Unpinning via Frida: with the
+  follow-up.)
 
 ### Phase 5 — Tools
 - Repeater (HTTP) and WS Repeater.

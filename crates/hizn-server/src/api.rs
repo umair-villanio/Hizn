@@ -21,11 +21,6 @@ use crate::state::{AppState, ProxyStatus, UpstreamConfig};
 
 /// Not-yet-ported routes: (method, path, phase).
 pub const PENDING: &[(&str, &str, u8)] = &[
-    ("GET", "/devices", 4),
-    ("GET", "/connections", 4),
-    ("POST", "/connect", 4),
-    ("POST", "/disconnect", 4),
-    ("POST", "/connect/genymotion", 4),
     ("POST", "/frida/provision", 4),
     ("GET", "/desktop/info", 5),
     ("POST", "/desktop/import-ca", 5),
@@ -63,6 +58,11 @@ pub const PORTED: &[(&str, &str)] = &[
     ("POST", "/rules"),
     ("GET", "/scope"),
     ("POST", "/scope"),
+    ("GET", "/devices"),
+    ("GET", "/connections"),
+    ("POST", "/connect"),
+    ("POST", "/disconnect"),
+    ("POST", "/connect/genymotion"),
 ];
 
 pub fn router() -> Router<AppState> {
@@ -80,6 +80,11 @@ pub fn router() -> Router<AppState> {
     by_path.insert("/intercept/resolve", post(intercept_resolve));
     by_path.insert("/rules", get(rules).post(set_rules));
     by_path.insert("/scope", get(scope).post(set_scope));
+    by_path.insert("/devices", get(devices));
+    by_path.insert("/connections", get(connections));
+    by_path.insert("/connect", post(connect));
+    by_path.insert("/disconnect", post(disconnect));
+    by_path.insert("/connect/genymotion", post(connect_genymotion));
 
     for &(method, path, phase) in PENDING {
         let filter = match method {
@@ -281,7 +286,95 @@ async fn set_scope(State(state): State<AppState>, JsonBody(body): JsonBody) -> J
     )
 }
 
+// ----------------------------------------------------- devices / one-click
+
+async fn devices(State(state): State<AppState>) -> Response {
+    match state.orchestrator.devices().list().await {
+        Ok(list) => Json(list).into_response(),
+        // Node surfaced ADB errors as a 500 from the route's throw.
+        Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    }
+}
+
+async fn connections(State(state): State<AppState>) -> Json<Value> {
+    Json(json!({ "connected": state.connected() }))
+}
+
+/// The one-click button. Builds the orchestrator options from the body and
+/// streams `setup-step` events as it runs.
+async fn connect(State(state): State<AppState>, JsonBody(body): JsonBody) -> Response {
+    let opts = hizn_devices::SetupOptions {
+        serial: string_field(&body, "serial").unwrap_or_default(),
+        frida_target: nonempty(&body, "fridaTarget"),
+        host_ip: nonempty(&body, "hostIp"),
+        emulator: false,
+    };
+    run_one_click(&state, opts).await
+}
+
+/// Find the Genymotion VM (optionally attaching one by IP first) and capture
+/// all its traffic — system-wide proxy + system-store CA, no Frida.
+async fn connect_genymotion(State(state): State<AppState>, JsonBody(body): JsonBody) -> Response {
+    if let Some(ip) = nonempty(&body, "ip") {
+        // May already be attached; ignore the result either way.
+        let _ = state.orchestrator.devices().adb().connect(&ip).await;
+    }
+    let device = match state.orchestrator.devices().find_genymotion().await {
+        Ok(Some(d)) => d,
+        Ok(None) => {
+            return error(
+                StatusCode::NOT_FOUND,
+                "No Genymotion/emulator detected. Start the VM and make sure its ADB is enabled.",
+            );
+        }
+        Err(e) => return error(StatusCode::BAD_REQUEST, e.to_string()),
+    };
+    let opts = hizn_devices::SetupOptions {
+        serial: device.serial,
+        frida_target: None,
+        host_ip: nonempty(&body, "hostIp"),
+        emulator: true,
+    };
+    run_one_click(&state, opts).await
+}
+
+async fn run_one_click(state: &AppState, opts: hizn_devices::SetupOptions) -> Response {
+    let bridge = state.proxy_bridge();
+    let step_state = state.clone();
+    let sink: hizn_devices::StepSink = Box::new(move |step| step_state.broadcast_step(step));
+    // Frida injection is not ported yet (Phase 4 follow-up); the step is skipped.
+    let result = state
+        .orchestrator
+        .run_one_click(opts, &bridge, &sink, None)
+        .await;
+    match result {
+        Ok(result) => {
+            state.mark_connected(&result.device.serial);
+            Json(result).into_response()
+        }
+        Err(e) => error(StatusCode::BAD_REQUEST, e),
+    }
+}
+
+async fn disconnect(State(state): State<AppState>, JsonBody(body): JsonBody) -> Json<Value> {
+    if let Some(serial) = string_field(&body, "serial") {
+        let port = state.hub().proxy_port;
+        state.orchestrator.disconnect(&serial, port).await;
+        state.mark_disconnected(&serial);
+    }
+    Json(json!({ "ok": true }))
+}
+
 // ----------------------------------------------------------------- helpers
+
+fn string_field(body: &Value, key: &str) -> Option<String> {
+    body.get(key).and_then(Value::as_str).map(str::to_owned)
+}
+
+/// `req.body?.x || undefined`: the value only when it's a non-empty string.
+fn nonempty(body: &Value, key: &str) -> Option<String> {
+    string_field(body, key).filter(|s| !s.is_empty())
+}
 
 /// Request JSON, read like Express's `express.json()`: parsed only for JSON
 /// content types (anything else reads as no body), `400` on malformed JSON.

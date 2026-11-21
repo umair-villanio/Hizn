@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use axum::extract::ws::Utf8Bytes;
+use hizn_devices::{Adb, Devices, Orchestrator};
 use hizn_proxy::{CaError, CertAuthority, ProxyEngine, ProxyEvent, hizn_dir};
 use indexmap::{IndexMap, IndexSet};
 use serde::Serialize;
@@ -122,6 +123,12 @@ impl Hub {
             intercept: self.intercept.clone(),
             ca_fingerprint: self.ca_fingerprint.clone(),
         }
+    }
+
+    /// Broadcast the current connected-device list.
+    pub fn broadcast_connections(&mut self) {
+        let connected: Vec<String> = self.connected.iter().cloned().collect();
+        self.broadcast(&json!({ "type": "connections", "connected": connected }));
     }
 
     /// Send one event to every open client, dropping clients that have gone away.
@@ -293,6 +300,113 @@ pub struct AppState {
     pub proxy: Arc<ProxyEngine>,
     /// The root CA, loaded on first use (like Node's lazy `getCA()`).
     ca: Arc<Mutex<Option<Arc<CertAuthority>>>>,
+    /// ADB + the one-click setup flow.
+    pub orchestrator: Arc<Orchestrator>,
+}
+
+impl AppState {
+    /// Mark a device connected (one-click routed) and broadcast `connections`.
+    pub fn mark_connected(&self, serial: &str) {
+        let mut hub = self.hub();
+        hub.connected.insert(serial.to_owned());
+        hub.broadcast_connections();
+    }
+
+    pub fn mark_disconnected(&self, serial: &str) {
+        let mut hub = self.hub();
+        hub.connected.shift_remove(serial);
+        hub.broadcast_connections();
+    }
+
+    pub fn connected(&self) -> Vec<String> {
+        self.hub().connected.iter().cloned().collect()
+    }
+
+    /// Broadcast a `setup-step` to every client (the orchestrator's step sink).
+    pub fn broadcast_step(&self, step: &hizn_devices::SetupStep) {
+        self.hub().broadcast(&hizn_devices::step_event(step));
+    }
+}
+
+/// Bridges the orchestrator to the proxy engine + CA (its `ProxyControl`).
+pub struct ProxyBridge {
+    pub proxy: Arc<ProxyEngine>,
+    pub ca: Arc<Mutex<Option<Arc<CertAuthority>>>>,
+    pub hub: Arc<Mutex<Hub>>,
+}
+
+impl hizn_devices::ProxyControl for ProxyBridge {
+    fn start(
+        &self,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(u16, String), String>> + Send + '_>,
+    > {
+        Box::pin(async move {
+            let port = self
+                .hub
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .proxy_port;
+            let ca = self.ca_arc().map_err(|e| e.to_string())?;
+            self.proxy
+                .start(port, ca)
+                .await
+                .map_err(|e| e.to_string())?;
+            let upstream = self
+                .hub
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .upstream
+                .clone();
+            {
+                let mut hub = self.hub.lock().unwrap_or_else(|p| p.into_inner());
+                hub.running = true;
+                let status = hub.status();
+                hub.broadcast(&json!({ "type": "proxy-status", "status": status }));
+            }
+            let detail = if upstream.enabled {
+                format!(
+                    "Listening :{port} → Burp {}:{}",
+                    upstream.host, upstream.port
+                )
+            } else {
+                format!("Listening :{port}")
+            };
+            Ok((port, detail))
+        })
+    }
+
+    fn ca_pem(&self) -> Result<String, String> {
+        self.ca_arc()
+            .map(|ca| ca.cert_pem().to_owned())
+            .map_err(|e| e.to_string())
+    }
+
+    fn port(&self) -> u16 {
+        self.hub
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .proxy_port
+    }
+}
+
+impl ProxyBridge {
+    fn ca_arc(&self) -> Result<Arc<CertAuthority>, CaError> {
+        let mut slot = self.ca.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(ca) = slot.as_ref() {
+            return Ok(ca.clone());
+        }
+        let dir = std::env::var_os("HIZN_HOME")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(hizn_dir);
+        let ca = Arc::new(CertAuthority::load_or_create(&dir)?);
+        self.hub
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .ca_fingerprint = Some(ca.fingerprint().to_owned());
+        *slot = Some(ca.clone());
+        Ok(ca)
+    }
 }
 
 impl Default for AppState {
@@ -309,10 +423,21 @@ impl AppState {
             let mut hub = events_hub.lock().unwrap_or_else(|p| p.into_inner());
             hub.on_proxy_event(event);
         })));
+        let orchestrator = Arc::new(Orchestrator::new(Devices::new(Adb::new())));
         Self {
             hub,
             proxy,
             ca: Arc::new(Mutex::new(None)),
+            orchestrator,
+        }
+    }
+
+    /// A `ProxyControl` bridge for the orchestrator.
+    pub fn proxy_bridge(&self) -> ProxyBridge {
+        ProxyBridge {
+            proxy: self.proxy.clone(),
+            ca: self.ca.clone(),
+            hub: self.hub.clone(),
         }
     }
 

@@ -1,0 +1,17 @@
+[package]
+name = "hizn-devices"
+description = "Hizn device automation: a thin ADB client plus the one-click setup orchestrator."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+tokio = { workspace = true, features = ["io-util", "net", "time", "process", "fs"] }
+serde.workspace = true
+serde_json.workspace = true
+if-addrs = "0.15"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["io-util", "net", "time", "process", "macros", "rt-multi-thread"] }

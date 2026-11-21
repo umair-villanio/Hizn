@@ -17,6 +17,7 @@ path = "src/main.rs"
 
 [dependencies]
 hizn-proxy = { path = "../hizn-proxy" }
+hizn-devices = { path = "../hizn-devices" }
 axum.workspace = true
 tokio.workspace = true
 tower-http.workspace = true

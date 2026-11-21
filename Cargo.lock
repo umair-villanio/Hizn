@@ -1683,6 +1683,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "hizn-devices"
+version = "0.2.0"
+dependencies = [
+ "if-addrs",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "hizn-proxy"
 version = "0.2.0"
 dependencies = [
@@ -1720,6 +1730,7 @@ version = "0.2.0"
 dependencies = [
  "axum",
  "futures-util",
+ "hizn-devices",
  "hizn-proxy",
  "indexmap 2.14.2",
  "serde",
@@ -2012,6 +2023,16 @@ checksum = "cb68373c0d6620ef8105e855e7745e18b0d00d3bdb07fb532e434244cdb9a714"
 dependencies = [
  "icu_normalizer",
  "icu_properties",
+]
+
+[[package]]
+name = "if-addrs"
+version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c0a05c691e1fae256cf7013d99dad472dc52d5543322761f83ec8d47eab40d2b"
+dependencies = [
+ "libc",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4615,6 +4636,7 @@ dependencies = [
  "libc",
  "mio",
  "pin-project-lite",
+ "signal-hook-registry",
  "socket2",
  "tokio-macros",
  "windows-sys 0.61.2",
