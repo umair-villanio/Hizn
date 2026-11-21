@@ -25,7 +25,7 @@ roughly a third, not by multiples.
 | | Today | After |
 |---|---|---|
 | Window / renderer | Electron (bundled Chromium) | Tauri 2 → OS webview (WebView2 on Windows) |
-| Backend | Node + Express + ws + mockttp | Rust: axum + tokio + hudsucker |
+| Backend | Node + Express + ws + mockttp | Rust: axum + tokio + own proxy engine (hyper + rustls) |
 | UI | `ui/index.html` | **`ui/index.html` — unchanged, byte for byte** |
 | Plugins | JS in the webview | **unchanged** (they run in the webview, not the backend) |
 
@@ -47,8 +47,17 @@ crates/
     src/ws.rs                 /ws upgrade + hello snapshot
     src/api.rs                the 38-route REST table (+ 501 stubs for unported routes)
     src/main.rs               `hizn` binary
+  hizn-proxy/                 (Phase 2) interception engine — replaces mockttp
+    src/ca.rs                 load/create the ~/.hizn CA, mint per-host leaf certs
+    src/listener.rs           proxy listener, CONNECT, TLS sniffing + interception
+    src/forward.rs            forward one exchange, report it as a flow
+    src/ws.rs                 WebSocket passthrough
+    src/upstream.rs           origin connections, Burp chaining, trust store
+    src/headers.rs            mockttp-style header objects for flows
+    src/capture.rs            streaming body capture
   hizn-app/                   (Phase 1) Tauri desktop shell — mirrors electron/main.js
   hizn-mcp/                   (Phase 5) stdio MCP bridge — mirrors src/mcp/mcp-server.ts
+tools/parity/                 Node-vs-Rust parity harness
 ui/  plugins/  scripts/frida/ shared, unchanged
 src/  electron/               Node reference implementation (removed at cutover)
 ```
@@ -80,10 +89,10 @@ src/  electron/               Node reference implementation (removed at cutover)
 | Area | Node today | Rust | Notes |
 |---|---|---|---|
 | HTTP + WS server | express, ws | `axum`, `tokio`, `tower-http` | |
-| MITM proxy | mockttp | `hudsucker` (hyper + rustls + rcgen) | main risk, see below |
+| MITM proxy | mockttp | own engine on `hyper` + `hyper-util` + `tokio-rustls` (`crates/hizn-proxy`) | `hudsucker` was evaluated and rejected — see Phase 2 |
 | TLS crypto | Node OpenSSL | `rustls` + `ring` | needs a 64-bit C compiler to build |
 | Leaf certs from CA | mockttp | `rcgen` | signs with the existing RSA CA |
-| Upstream (Burp) chaining | mockttp | custom hyper connector (HTTP CONNECT) | hudsucker has no built-in upstream proxy |
+| Upstream (Burp) chaining | mockttp | custom connector: HTTP `CONNECT` tunnel for everything | same as mockttp |
 | ADB | @devicefarmer/adbkit | ADB server protocol over TCP 5037 (`adb_client` or a thin own client) | same protocol adbkit speaks |
 | Frida | frida-js (pure JS) | spike: pure-Rust D-Bus-over-WebSocket client (like frida-js) vs `frida` crate (native devkit) | decided in Phase 4 |
 | Repeater / Intruder | Node http(s) | `reqwest` (rustls, invalid certs allowed) | |
@@ -180,24 +189,73 @@ before the next one starts.
   mockttp); re-measure in Phase 6. A further ~80 MB could come from running the
   webview without GPU acceleration — to evaluate in Phase 6, not assumed.
 
-### Phase 2 — Proxy core (largest phase)
-- CA: load the existing `~/.hizn` CA; generate + persist only if missing.
-  `GET /ca` serves the same PEM.
-- HTTP + HTTPS MITM via hudsucker; per-host leaf certs cached.
-- Flow capture: `flow` / `flow-update` with identical fields; flow store (cap 5000);
-  `GET /flows`, clear, import.
-- Upstream chaining to Burp (`POST /upstream`, `upstream` event).
-- **Exit:** a parity harness sends the same traffic through the Node and Rust
-  proxies (HTTP, HTTPS, chunked, gzip/br, large and binary bodies, redirects,
-  and HTTP/2 to the same extent the Node reference negotiates it) and the
-  captured flows match; Burp chaining works.
+### Phase 2 — Proxy core ✅ verified
+- **Engine:** `crates/hizn-proxy`, written on hyper/rustls rather than `hudsucker`.
+  hudsucker answers WebSocket upgrades with its own `101` *before* reaching the
+  origin (losing subprotocol negotiation), sends WebSockets and non-intercepted
+  tunnels around the upstream proxy, always offers HTTP/2, and can't drop a
+  connection — each would have broken apps or Burp chaining.
+- **CA:** loads the existing `~/.hizn` CA (verified: `/api/ca` byte-identical,
+  fingerprint `c464136955c72e94` from both backends); per-host leaf certs
+  (shared ECDSA key, cached), DNS or IP SANs.
+- **TLS:** HTTP/1.1 whenever the client offers it, HTTP/2 only for h2-only
+  clients (mockttp's `http2: 'fallback'`); an h2 client still reaches an
+  HTTP/1.1-only origin.
+- **Flows:** `flow` once the request body has arrived, `flow-update` when the
+  response body has been delivered (`error: 'aborted'` if the client leaves);
+  same fields, order, and header-object rules as mockttp (`rawHeadersToObject`);
+  HTTP/2 flows carry the pseudo-headers and `:status`, with `statusMessage: ""`.
+- **Errors:** unreachable origins answer `502 Error communicating with upstream
+  server` with Node's error text (`Error: connect ECONNREFUSED 127.0.0.1:47199`,
+  `Error: getaddrinfo ENOTFOUND …`) and are recorded as responses; a request
+  aimed at the proxy itself gets mockttp's `500` loop message.
+- **Upstream:** Burp chaining through `CONNECT` for HTTP and HTTPS alike; switching
+  takes effect immediately while running.
+- **Routes ported (8/38):** `/status`, `/ca`, `/proxy/start`, `/proxy/stop`,
+  `/upstream`, `/flows`, `/flows/clear`, `/flows/import`.
+- **Parity harness** (`tools/parity/proxy-parity.mjs`): runs both backends side
+  by side and compares what the client got, what the origin got, and the
+  flow. Result: **45/45** — 36 identical, 9 with only the differences below.
+  Covers HTTP, HTTPS (by name and IP), query strings, JSON and 1 MB uploads,
+  chunked, gzip, brotli, a 2 MB binary body, UTF-8 and invalid bytes, 204,
+  HEAD, redirects, repeated headers both ways, 404, plain HTTP inside CONNECT,
+  refused / DNS / untrusted-TLS origins, client abort, loop, ws, wss, an
+  h2-only client, Burp chaining (HTTP + HTTPS), and 17 REST/WebSocket API steps.
+- Checked in the real UI: live history, request detail, Clear, header status.
+
+**Differences from Node — intentional, each recorded in the harness:**
+
+| | Node (mockttp) | Rust | Why |
+|---|---|---|---|
+| HTTPS to an IP address | client rejects the cert (no IP SAN) | works | improvement |
+| Response delivery | whole response buffered before any byte is sent | streamed | improvement: SSE / long responses work. Phase 3 buffers only when a response is held or rewritten. |
+| WebSocket `Sec-WebSocket-Protocol` | only the first offered value forwarded | header passed through unchanged | improvement |
+| Error reply framing | no headers, close-delimited | `content-length`, then close | same status, reason and body |
+| TLS failure text | OpenSSL wording | rustls mapped to Node's wording where known | e.g. `self-signed certificate` |
+| HTTP/2 → HTTP/1.1 origin | adds `Connection: keep-alive` | omitted | a connection header breaks h2-capable origins |
+| Loop request | an extra flow with no response | one flow | |
+| CA on a fresh install | RSA-2048 | ECDSA P-256 | `ring` can't generate RSA keys; an existing RSA CA is always reused |
+| Request JSON limit | 100 KB (large session imports fail) | 600 MB | fix |
+| `POST /upstream` without host/port | sets them to `undefined` | keeps the previous values | the UI always sends both |
+| Origin certificate trust | Node's bundled roots | Mozilla roots + Windows store (+ `HIZN_EXTRA_CA_CERTS`) | a Burp CA trusted by Windows works when chaining |
+
+Moved to Phase 3: WebSocket frame history (`ws-message`, `wsMessages`,
+`wsCloseCode`).
+
+Run the harness:
+
+```bash
+cargo build -p hizn-server
+node tools/parity/proxy-parity.mjs --node ../droidmitm --rust target/debug/hizn.exe
+```
 
 ### Phase 3 — Proxy features
 - Intercept: hold / edit / forward / drop for requests and responses, per-request
   "intercept response", held items in the hello snapshot.
 - Match & Replace rules (all 5 parts, regex + literal).
 - Target scope (substring + `*.wildcard`).
-- WebSocket interception history (`ws-message`, frame caps).
+- WebSocket interception history (`ws-message`, frame caps, `wsCloseCode`) —
+  parse frames from the passthrough streams, including permessage-deflate.
 - **Exit:** parity harness covers intercept edits, rules, and scope; manual
   intercept session matches Node behavior.
 
@@ -249,8 +307,8 @@ before the next one starts.
 
 | Risk | Mitigation |
 |---|---|
-| Proxy edge cases differ from mockttp (streaming, TLS quirks, HTTP/2, WS passthrough) | parity harness per case; fix before moving on |
-| Upstream chaining isn't built into hudsucker | custom CONNECT connector, tested against Burp |
+| Proxy edge cases differ from mockttp (streaming, TLS quirks, HTTP/2, WS passthrough) | parity harness per case; fix before moving on (Phase 2: 45/45) |
+| Upstream chaining | CONNECT connector; verified against a stand-in proxy — still to try with real Burp in Phase 4's device pass |
 | Frida client in Rust | spike two options in Phase 4 before committing |
 | Toolchain: machine has `windows-gnu` + 32-bit MinGW only | install MSVC Build Tools in Phase 1 (one-time) |
 | Future server-side plugins (backend JS) | embed a small JS engine (QuickJS via `rquickjs`) so plugins stay JavaScript |

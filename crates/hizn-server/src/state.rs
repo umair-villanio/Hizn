@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use axum::extract::ws::Utf8Bytes;
+use hizn_proxy::{CaError, CertAuthority, ProxyEngine, ProxyEvent, hizn_dir};
 use indexmap::{IndexMap, IndexSet};
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -198,17 +199,103 @@ impl Hub {
         ));
         out
     }
+
+    /// Store a new flow (dropping the oldest past [`MAX_FLOWS`]) and stream it.
+    pub fn add_flow(&mut self, flow: Value) {
+        if let Some(id) = flow.get("id").and_then(Value::as_str) {
+            self.flows.insert(id.to_owned(), flow.clone());
+            if self.flows.len() > MAX_FLOWS {
+                self.flows.shift_remove_index(0);
+            }
+        }
+        self.broadcast(&json!({ "type": "flow", "flow": flow }));
+    }
+
+    /// Merge an update into its flow (`Object.assign`) and stream it.
+    pub fn update_flow(&mut self, update: Value) {
+        if let (Some(id), Value::Object(fields)) =
+            (update.get("id").and_then(Value::as_str), &update)
+            && let Some(Value::Object(existing)) = self.flows.get_mut(id)
+        {
+            for (k, v) in fields {
+                existing.insert(k.clone(), v.clone());
+            }
+        }
+        self.broadcast(&json!({ "type": "flow-update", "update": update }));
+    }
+
+    /// Replace the whole flow log (session import) and push it to everyone.
+    pub fn replace_flows(&mut self, flows: Vec<Value>) -> usize {
+        self.flows.clear();
+        for flow in flows {
+            // Same filter as Node: an object with a truthy `id`.
+            let id = match flow.get("id") {
+                Some(Value::String(s)) if !s.is_empty() => s.clone(),
+                Some(Value::Number(n)) if n.as_f64() != Some(0.0) => n.to_string(),
+                _ => continue,
+            };
+            self.flows.insert(id, flow);
+        }
+        let snapshot = FlowSnapshot {
+            kind: "flow-snapshot",
+            flows: self.flows.values().collect(),
+        };
+        if let Ok(text) = serde_json::to_string(&snapshot) {
+            let text = Utf8Bytes::from(text);
+            self.clients.retain(|_, tx| tx.send(text.clone()).is_ok());
+        }
+        self.flows.len()
+    }
 }
 
-/// Cheap-to-clone handle to the shared hub.
-#[derive(Clone, Default)]
+/// Cheap-to-clone handle to the shared state.
+#[derive(Clone)]
 pub struct AppState {
     hub: Arc<Mutex<Hub>>,
+    /// The interception engine.
+    pub proxy: Arc<ProxyEngine>,
+    /// The root CA, loaded on first use (like Node's lazy `getCA()`).
+    ca: Arc<Mutex<Option<Arc<CertAuthority>>>>,
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl AppState {
     pub fn new() -> Self {
-        Self::default()
+        let hub = Arc::new(Mutex::new(Hub::default()));
+        let events_hub = hub.clone();
+        let proxy = Arc::new(ProxyEngine::new(Arc::new(move |event| {
+            let mut hub = events_hub.lock().unwrap_or_else(|p| p.into_inner());
+            match event {
+                ProxyEvent::Flow(flow) => hub.add_flow(flow),
+                ProxyEvent::FlowUpdate(update) => hub.update_flow(update),
+            }
+        })));
+        Self {
+            hub,
+            proxy,
+            ca: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    /// The CA from `~/.hizn` (created and persisted on first run). Loading it
+    /// also makes `caFingerprint` appear in the status, as in Node.
+    pub fn ca(&self) -> Result<Arc<CertAuthority>, CaError> {
+        let mut slot = self.ca.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(ca) = slot.as_ref() {
+            return Ok(ca.clone());
+        }
+        let dir = std::env::var_os("HIZN_HOME")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(hizn_dir);
+        let ca = Arc::new(CertAuthority::load_or_create(&dir)?);
+        self.hub().ca_fingerprint = Some(ca.fingerprint().to_owned());
+        *slot = Some(ca.clone());
+        Ok(ca)
     }
 
     /// Lock the hub. Never hold the guard across an `.await`.

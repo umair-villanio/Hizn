@@ -2,27 +2,24 @@
 //!
 //! Routes not ported yet answer `501` with a JSON `error` (which the UI's
 //! `api()` helper shows as a banner), plus the route and the RUST-PORT.md phase
-//! that ports it. As phases land, entries move from `PENDING` to real handlers.
+//! that ports it. As phases land, entries move from `PENDING` to `PORTED`.
 //!
 //! SPDX-License-Identifier: AGPL-3.0-only
 
-use axum::extract::State;
+use axum::extract::{FromRequest, Request, State};
 use axum::http::StatusCode;
-use axum::response::IntoResponse;
-use axum::routing::{MethodFilter, MethodRouter, get};
+use axum::http::header::CONTENT_TYPE;
+use axum::response::{IntoResponse, Response};
+use axum::routing::{MethodFilter, MethodRouter, get, post};
 use axum::{Json, Router};
 use indexmap::IndexMap;
-use serde_json::json;
+use serde_json::{Value, json};
 
-use crate::state::{AppState, ProxyStatus};
+use crate::state::{AppState, ProxyStatus, UpstreamConfig};
 
 /// Not-yet-ported routes: (method, path, phase).
 pub const PENDING: &[(&str, &str, u8)] = &[
     ("GET", "/devices", 4),
-    ("GET", "/ca", 2),
-    ("POST", "/proxy/start", 2),
-    ("POST", "/proxy/stop", 2),
-    ("POST", "/upstream", 2),
     ("GET", "/intercept", 3),
     ("POST", "/intercept/config", 3),
     ("POST", "/intercept/resolve", 3),
@@ -36,9 +33,6 @@ pub const PENDING: &[(&str, &str, u8)] = &[
     ("POST", "/desktop/firefox", 5),
     ("GET", "/rules", 3),
     ("POST", "/rules", 3),
-    ("GET", "/flows", 2),
-    ("POST", "/flows/clear", 2),
-    ("POST", "/flows/import", 2),
     ("GET", "/scope", 3),
     ("POST", "/scope", 3),
     ("POST", "/intruder/start", 5),
@@ -58,11 +52,27 @@ pub const PENDING: &[(&str, &str, u8)] = &[
 ];
 
 /// Routes with a real implementation.
-pub const PORTED: &[(&str, &str)] = &[("GET", "/status")];
+pub const PORTED: &[(&str, &str)] = &[
+    ("GET", "/status"),
+    ("GET", "/ca"),
+    ("POST", "/proxy/start"),
+    ("POST", "/proxy/stop"),
+    ("POST", "/upstream"),
+    ("GET", "/flows"),
+    ("POST", "/flows/clear"),
+    ("POST", "/flows/import"),
+];
 
 pub fn router() -> Router<AppState> {
     let mut by_path: IndexMap<&'static str, MethodRouter<AppState>> = IndexMap::new();
     by_path.insert("/status", get(status));
+    by_path.insert("/ca", get(ca));
+    by_path.insert("/proxy/start", post(proxy_start));
+    by_path.insert("/proxy/stop", post(proxy_stop));
+    by_path.insert("/upstream", post(set_upstream));
+    by_path.insert("/flows", get(flows));
+    by_path.insert("/flows/clear", post(flows_clear));
+    by_path.insert("/flows/import", post(flows_import));
 
     for &(method, path, phase) in PENDING {
         let filter = match method {
@@ -86,9 +96,174 @@ pub fn router() -> Router<AppState> {
         })
 }
 
+// ---------------------------------------------------------------- handlers
+
 async fn status(State(state): State<AppState>) -> Json<ProxyStatus> {
     let status = state.hub().status();
     Json(status)
+}
+
+async fn ca(State(state): State<AppState>) -> Response {
+    match state.ca() {
+        Ok(ca) => (
+            [(CONTENT_TYPE, "application/x-pem-file; charset=utf-8")],
+            ca.cert_pem().to_owned(),
+        )
+            .into_response(),
+        Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    }
+}
+
+async fn proxy_start(State(state): State<AppState>, JsonBody(body): JsonBody) -> Response {
+    if state.proxy.is_running() {
+        let status = state.hub().status();
+        return Json(status).into_response();
+    }
+    // `Number(req.body?.port) || current port`
+    let port = match js_number(body.get("port")) {
+        n if n.is_nan() || n == 0.0 => state.hub().proxy_port,
+        n if n.fract() == 0.0 && (1.0..=65535.0).contains(&n) => n as u16,
+        n => {
+            return error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("options.port should be >= 0 and < 65536. Received {n}."),
+            );
+        }
+    };
+    state.hub().proxy_port = port;
+    let ca = match state.ca() {
+        Ok(ca) => ca,
+        Err(e) => return error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    };
+    if let Err(e) = state.proxy.start(port, ca).await {
+        return error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string());
+    }
+    let status = {
+        let mut hub = state.hub();
+        hub.running = true;
+        let status = hub.status();
+        hub.broadcast(&json!({ "type": "proxy-status", "status": status }));
+        status
+    };
+    Json(status).into_response()
+}
+
+async fn proxy_stop(State(state): State<AppState>) -> Json<Value> {
+    let was_running = state.proxy.is_running();
+    state.proxy.stop().await;
+    if was_running {
+        let mut hub = state.hub();
+        hub.running = false;
+        let status = hub.status();
+        hub.broadcast(&json!({ "type": "proxy-status", "status": status }));
+    }
+    Json(json!({ "ok": true }))
+}
+
+async fn set_upstream(
+    State(state): State<AppState>,
+    JsonBody(body): JsonBody,
+) -> Json<UpstreamConfig> {
+    let upstream = {
+        let mut hub = state.hub();
+        hub.upstream.enabled = js_truthy(body.get("enabled"));
+        if let Some(Value::String(host)) = body.get("host") {
+            hub.upstream.host = host.clone();
+        }
+        let port = js_number(body.get("port"));
+        if port.fract() == 0.0 && (1.0..=65535.0).contains(&port) {
+            hub.upstream.port = port as u16;
+        }
+        hub.upstream.clone()
+    };
+    state.proxy.set_upstream(
+        upstream
+            .enabled
+            .then(|| (upstream.host.clone(), upstream.port)),
+    );
+    state
+        .hub()
+        .broadcast(&json!({ "type": "upstream", "upstream": upstream }));
+    Json(upstream)
+}
+
+async fn flows(State(state): State<AppState>) -> Json<Value> {
+    let flows: Vec<Value> = state.hub().flows.values().cloned().collect();
+    Json(Value::Array(flows))
+}
+
+async fn flows_clear(State(state): State<AppState>) -> Json<Value> {
+    let mut hub = state.hub();
+    hub.flows.clear();
+    hub.broadcast(&json!({ "type": "flows-cleared" }));
+    Json(json!({ "ok": true }))
+}
+
+async fn flows_import(State(state): State<AppState>, JsonBody(body): JsonBody) -> Json<Value> {
+    let incoming = match body.get("flows") {
+        Some(Value::Array(list)) => list.clone(),
+        _ => Vec::new(),
+    };
+    let count = state.hub().replace_flows(incoming);
+    Json(json!({ "ok": true, "count": count }))
+}
+
+// ----------------------------------------------------------------- helpers
+
+/// Request JSON, read like Express's `express.json()`: parsed only for JSON
+/// content types (anything else reads as no body), `400` on malformed JSON.
+/// The limit is far above Express's 100 KB so large saved sessions import.
+pub struct JsonBody(pub Value);
+
+const MAX_JSON_BODY: usize = 600 * 1024 * 1024;
+
+impl<S: Send + Sync> FromRequest<S> for JsonBody {
+    type Rejection = Response;
+
+    async fn from_request(req: Request, _state: &S) -> Result<Self, Response> {
+        let is_json = req
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|ct| ct.to_ascii_lowercase().contains("json"));
+        let bytes = axum::body::to_bytes(req.into_body(), MAX_JSON_BODY)
+            .await
+            .map_err(|e| error(StatusCode::PAYLOAD_TOO_LARGE, e.to_string()))?;
+        if !is_json || bytes.is_empty() {
+            return Ok(Self(Value::Null));
+        }
+        serde_json::from_slice(&bytes)
+            .map(Self)
+            .map_err(|e| error(StatusCode::BAD_REQUEST, e.to_string()))
+    }
+}
+
+/// JavaScript `Number(value)` for JSON input.
+fn js_number(v: Option<&Value>) -> f64 {
+    match v {
+        None => f64::NAN,
+        Some(Value::Null) => 0.0,
+        Some(Value::Bool(b)) => f64::from(u8::from(*b)),
+        Some(Value::Number(n)) => n.as_f64().unwrap_or(f64::NAN),
+        Some(Value::String(s)) if s.trim().is_empty() => 0.0,
+        Some(Value::String(s)) => s.trim().parse().unwrap_or(f64::NAN),
+        Some(_) => f64::NAN,
+    }
+}
+
+/// JavaScript `!!value` for JSON input.
+fn js_truthy(v: Option<&Value>) -> bool {
+    match v {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(b)) => *b,
+        Some(Value::Number(n)) => n.as_f64().is_some_and(|f| f != 0.0 && !f.is_nan()),
+        Some(Value::String(s)) => !s.is_empty(),
+        Some(_) => true,
+    }
+}
+
+fn error(status: StatusCode, message: impl Into<String>) -> Response {
+    (status, Json(json!({ "error": message.into() }))).into_response()
 }
 
 fn not_ported(method: &str, path: &str, phase: u8) -> impl IntoResponse {
@@ -124,5 +299,17 @@ mod tests {
     #[test]
     fn router_builds_without_conflicts() {
         let _ = router();
+    }
+
+    #[test]
+    fn js_number_and_truthy_match_javascript() {
+        assert!(js_number(None).is_nan());
+        assert_eq!(js_number(Some(&json!("8001"))), 8001.0);
+        assert_eq!(js_number(Some(&json!(""))), 0.0);
+        assert!(js_number(Some(&json!("abc"))).is_nan());
+        assert!(js_truthy(Some(&json!(1))));
+        assert!(!js_truthy(Some(&json!(""))));
+        assert!(!js_truthy(None));
+        assert!(js_truthy(Some(&json!({}))));
     }
 }
