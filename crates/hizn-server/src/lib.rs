@@ -7,6 +7,7 @@
 //! SPDX-License-Identifier: AGPL-3.0-only
 
 pub mod api;
+pub mod desktop;
 pub mod plugins;
 pub mod state;
 pub mod ws;

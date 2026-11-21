@@ -315,6 +315,8 @@ pub struct AppState {
     pub plugins: Arc<crate::plugins::Plugins>,
     /// WebSocket Repeater (live frame replay).
     pub ws_repeater: Arc<hizn_tools::WsRepeater>,
+    /// Desktop browser capture (Firefox).
+    pub desktop: Arc<crate::desktop::Desktop>,
 }
 
 impl AppState {
@@ -489,6 +491,7 @@ impl AppState {
             intruder_sink,
             plugins: Arc::new(crate::plugins::Plugins::new(crate::plugins_dir())),
             ws_repeater: Arc::new(hizn_tools::WsRepeater::new(ws_rep_sink)),
+            desktop: Arc::new(crate::desktop::Desktop::new()),
         }
     }
 

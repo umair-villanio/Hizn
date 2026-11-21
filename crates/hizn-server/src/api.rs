@@ -20,12 +20,7 @@ use hizn_proxy::Decision;
 use crate::state::{AppState, ProxyStatus, UpstreamConfig};
 
 /// Not-yet-ported routes: (method, path, phase).
-pub const PENDING: &[(&str, &str, u8)] = &[
-    ("POST", "/frida/provision", 4),
-    ("GET", "/desktop/info", 5),
-    ("POST", "/desktop/import-ca", 5),
-    ("POST", "/desktop/firefox", 5),
-];
+pub const PENDING: &[(&str, &str, u8)] = &[("POST", "/frida/provision", 4)];
 
 /// Routes with a real implementation.
 pub const PORTED: &[(&str, &str)] = &[
@@ -58,6 +53,9 @@ pub const PORTED: &[(&str, &str)] = &[
     ("POST", "/analyzer/scan"),
     ("GET", "/analyzer/packages"),
     ("POST", "/analyzer/scan-device"),
+    ("GET", "/desktop/info"),
+    ("POST", "/desktop/import-ca"),
+    ("POST", "/desktop/firefox"),
     ("GET", "/mcp/info"),
     ("GET", "/plugins"),
     ("POST", "/plugins"),
@@ -98,6 +96,9 @@ pub fn router() -> Router<AppState> {
     );
     by_path.insert("/analyzer/packages", get(analyzer_packages));
     by_path.insert("/analyzer/scan-device", post(analyzer_scan_device));
+    by_path.insert("/desktop/info", get(desktop_info));
+    by_path.insert("/desktop/import-ca", post(desktop_import_ca));
+    by_path.insert("/desktop/firefox", post(desktop_firefox));
     by_path.insert("/mcp/info", get(mcp_info));
     by_path.insert("/plugins", get(plugins_list).post(plugins_install));
     by_path.insert("/plugins/toggle", post(plugins_toggle));
@@ -623,6 +624,62 @@ async fn disconnect(State(state): State<AppState>, JsonBody(body): JsonBody) -> 
         state.mark_disconnected(&serial);
     }
     Json(json!({ "ok": true }))
+}
+
+// --------------------------------------------------------------- desktop
+
+async fn desktop_info(State(state): State<AppState>) -> Json<Value> {
+    let proxy_port = state.hub().proxy_port;
+    let desktop = state.desktop.clone();
+    Json(
+        tokio::task::spawn_blocking(move || desktop.info_full(proxy_port))
+            .await
+            .unwrap_or_else(|_| json!({})),
+    )
+}
+
+async fn desktop_import_ca(State(state): State<AppState>) -> Response {
+    let ca = match state.ca() {
+        Ok(ca) => ca.cert_pem().to_owned(),
+        Err(e) => return error(StatusCode::BAD_REQUEST, e.to_string()),
+    };
+    let desktop = state.desktop.clone();
+    let result = tokio::task::spawn_blocking(move || desktop.auto_import_ca(&ca))
+        .await
+        .unwrap_or_else(|_| json!({ "imported": false }));
+    Json(result).into_response()
+}
+
+async fn desktop_firefox(State(state): State<AppState>) -> Response {
+    // Start the proxy first (like Node), so Firefox has something to hit.
+    if !state.proxy.is_running() {
+        let port = state.hub().proxy_port;
+        match state.ca() {
+            Ok(ca) => {
+                if let Err(e) = state.proxy.start(port, ca).await {
+                    return error(StatusCode::BAD_REQUEST, e.to_string());
+                }
+                let mut hub = state.hub();
+                hub.running = true;
+                let status = hub.status();
+                hub.broadcast(&json!({ "type": "proxy-status", "status": status }));
+            }
+            Err(e) => return error(StatusCode::BAD_REQUEST, e.to_string()),
+        }
+    }
+    let proxy_port = state.hub().proxy_port;
+    let ca = match state.ca() {
+        Ok(ca) => ca.cert_pem().to_owned(),
+        Err(e) => return error(StatusCode::BAD_REQUEST, e.to_string()),
+    };
+    let desktop = state.desktop.clone();
+    let result = tokio::task::spawn_blocking(move || desktop.launch_firefox(proxy_port, &ca))
+        .await
+        .unwrap_or_else(|_| Err("launch task failed".into()));
+    match result {
+        Ok(info) => Json(info).into_response(),
+        Err(e) => error(StatusCode::BAD_REQUEST, e),
+    }
 }
 
 // ----------------------------------------------------------- mcp / plugins
