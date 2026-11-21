@@ -25,14 +25,6 @@ pub const PENDING: &[(&str, &str, u8)] = &[
     ("GET", "/desktop/info", 5),
     ("POST", "/desktop/import-ca", 5),
     ("POST", "/desktop/firefox", 5),
-    ("POST", "/repeater/ws/open", 5),
-    ("POST", "/repeater/ws/send", 5),
-    ("POST", "/repeater/ws/close", 5),
-    ("GET", "/mcp/info", 5),
-    ("GET", "/plugins", 5),
-    ("POST", "/plugins", 5),
-    ("POST", "/plugins/toggle", 5),
-    ("DELETE", "/plugins/{origin}/{file}", 5),
 ];
 
 /// Routes with a real implementation.
@@ -60,9 +52,17 @@ pub const PORTED: &[(&str, &str)] = &[
     ("POST", "/repeater/send"),
     ("POST", "/intruder/start"),
     ("POST", "/intruder/stop"),
+    ("POST", "/repeater/ws/open"),
+    ("POST", "/repeater/ws/send"),
+    ("POST", "/repeater/ws/close"),
     ("POST", "/analyzer/scan"),
     ("GET", "/analyzer/packages"),
     ("POST", "/analyzer/scan-device"),
+    ("GET", "/mcp/info"),
+    ("GET", "/plugins"),
+    ("POST", "/plugins"),
+    ("POST", "/plugins/toggle"),
+    ("DELETE", "/plugins/{origin}/{file}"),
 ];
 
 pub fn router() -> Router<AppState> {
@@ -88,6 +88,9 @@ pub fn router() -> Router<AppState> {
     by_path.insert("/repeater/send", post(repeater_send));
     by_path.insert("/intruder/start", post(intruder_start));
     by_path.insert("/intruder/stop", post(intruder_stop));
+    by_path.insert("/repeater/ws/open", post(ws_open));
+    by_path.insert("/repeater/ws/send", post(ws_send));
+    by_path.insert("/repeater/ws/close", post(ws_close));
     // The APK is POSTed as the raw body; lift the body limit to 600 MB.
     by_path.insert(
         "/analyzer/scan",
@@ -95,6 +98,13 @@ pub fn router() -> Router<AppState> {
     );
     by_path.insert("/analyzer/packages", get(analyzer_packages));
     by_path.insert("/analyzer/scan-device", post(analyzer_scan_device));
+    by_path.insert("/mcp/info", get(mcp_info));
+    by_path.insert("/plugins", get(plugins_list).post(plugins_install));
+    by_path.insert("/plugins/toggle", post(plugins_toggle));
+    by_path.insert(
+        "/plugins/{origin}/{file}",
+        axum::routing::delete(plugins_delete),
+    );
 
     for &(method, path, phase) in PENDING {
         let filter = match method {
@@ -495,6 +505,47 @@ async fn intruder_stop(State(state): State<AppState>) -> Json<Value> {
     Json(json!({ "ok": true }))
 }
 
+async fn ws_open(State(state): State<AppState>, JsonBody(body): JsonBody) -> Response {
+    let url = body
+        .get("url")
+        .map(hizn_proxy::js::string)
+        .unwrap_or_default();
+    match state
+        .ws_repeater
+        .open(&url, body.get("headers"), js_truthy(body.get("insecure")))
+    {
+        Ok(id) => Json(json!({ "ok": true, "id": id })).into_response(),
+        Err(e) => error(StatusCode::BAD_REQUEST, e),
+    }
+}
+
+async fn ws_send(State(state): State<AppState>, JsonBody(body): JsonBody) -> Response {
+    let id = body
+        .get("id")
+        .map(hizn_proxy::js::string)
+        .unwrap_or_default();
+    let data = body
+        .get("data")
+        .map(hizn_proxy::js::string)
+        .unwrap_or_default();
+    match state
+        .ws_repeater
+        .send(&id, data, js_truthy(body.get("isBinary")))
+    {
+        Ok(()) => Json(json!({ "ok": true })).into_response(),
+        Err(e) => error(StatusCode::BAD_REQUEST, e),
+    }
+}
+
+async fn ws_close(State(state): State<AppState>, JsonBody(body): JsonBody) -> Json<Value> {
+    let id = body
+        .get("id")
+        .map(hizn_proxy::js::string)
+        .unwrap_or_default();
+    state.ws_repeater.close(&id);
+    Json(json!({ "ok": true }))
+}
+
 // ----------------------------------------------------- devices / one-click
 
 async fn devices(State(state): State<AppState>) -> Response {
@@ -572,6 +623,87 @@ async fn disconnect(State(state): State<AppState>, JsonBody(body): JsonBody) -> 
         state.mark_disconnected(&serial);
     }
     Json(json!({ "ok": true }))
+}
+
+// ----------------------------------------------------------- mcp / plugins
+
+async fn mcp_info(State(state): State<AppState>) -> Json<Value> {
+    // The MCP bridge binary (hizn-mcp) sits next to the running executable.
+    let server_path = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join(mcp_binary_name())))
+        .unwrap_or_default();
+    let port = state.hub().api_port;
+    Json(json!({
+        "serverPath": server_path.to_string_lossy(),
+        "exists": server_path.is_file(),
+        "apiUrl": format!("http://127.0.0.1:{port}"),
+        "tools": {
+            "readonly": ["hizn_status", "list_flows", "get_flow", "list_devices", "list_device_apps", "get_scope", "get_intercept", "scan_apk"],
+            "active": ["start_proxy", "stop_proxy", "send_request", "start_intruder", "stop_intruder", "set_scope", "resolve_intercept"],
+        },
+    }))
+}
+
+fn mcp_binary_name() -> &'static str {
+    if cfg!(windows) {
+        "hizn-mcp.exe"
+    } else {
+        "hizn-mcp"
+    }
+}
+
+async fn plugins_list(State(state): State<AppState>) -> Json<Value> {
+    let plugins = state.plugins.clone();
+    let (list, dirs) = tokio::task::spawn_blocking(move || (plugins.list(), plugins.dirs()))
+        .await
+        .unwrap_or_else(|_| (Vec::new(), json!({})));
+    Json(json!({ "plugins": list, "dirs": dirs }))
+}
+
+async fn plugins_install(State(state): State<AppState>, JsonBody(body): JsonBody) -> Response {
+    let name = string_field(&body, "name").unwrap_or_default();
+    let source = string_field(&body, "source").unwrap_or_default();
+    if name.is_empty() || source.is_empty() {
+        return error(StatusCode::BAD_REQUEST, "name and source are required");
+    }
+    let desc = string_field(&body, "desc");
+    let author = string_field(&body, "author");
+    let plugins = state.plugins.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        plugins.install(&name, desc.as_deref(), author.as_deref(), &source)
+    })
+    .await
+    .unwrap_or_else(|_| Err("install task failed".into()));
+    match result {
+        Ok(info) => Json(info).into_response(),
+        Err(e) => error(StatusCode::BAD_REQUEST, e),
+    }
+}
+
+async fn plugins_toggle(State(state): State<AppState>, JsonBody(body): JsonBody) -> Json<Value> {
+    if let Some(id) = string_field(&body, "id") {
+        let enabled = js_truthy(body.get("enabled"));
+        let plugins = state.plugins.clone();
+        let _ = tokio::task::spawn_blocking(move || plugins.set_enabled(&id, enabled)).await;
+    }
+    Json(json!({ "ok": true }))
+}
+
+async fn plugins_delete(
+    State(state): State<AppState>,
+    path: axum::extract::Path<(String, String)>,
+) -> Response {
+    let axum::extract::Path((origin, file)) = path;
+    let id = format!("{origin}/{file}");
+    let plugins = state.plugins.clone();
+    let result = tokio::task::spawn_blocking(move || plugins.remove(&id))
+        .await
+        .unwrap_or_else(|_| Err("delete task failed".into()));
+    match result {
+        Ok(()) => Json(json!({ "ok": true })).into_response(),
+        Err(e) => error(StatusCode::BAD_REQUEST, e),
+    }
 }
 
 // ----------------------------------------------------------------- helpers

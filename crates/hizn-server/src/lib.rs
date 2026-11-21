@@ -7,6 +7,7 @@
 //! SPDX-License-Identifier: AGPL-3.0-only
 
 pub mod api;
+pub mod plugins;
 pub mod state;
 pub mod ws;
 
@@ -19,6 +20,14 @@ use tower_http::services::ServeDir;
 
 pub use state::AppState;
 
+/// The shipped `plugins/` folder (sibling of `ui/`), for the contrib store.
+pub fn plugins_dir() -> PathBuf {
+    find_ui_dir()
+        .and_then(|ui| ui.parent().map(|p| p.join("plugins")))
+        .filter(|p| p.is_dir())
+        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins"))
+}
+
 /// Build the full app: `/api/*`, `/ws`, and the static UI.
 pub fn app(state: AppState, ui_dir: &Path) -> Router {
     Router::new()
@@ -30,6 +39,9 @@ pub fn app(state: AppState, ui_dir: &Path) -> Router {
 
 /// Serve on an already-bound listener until the process exits.
 pub async fn serve(listener: TcpListener, state: AppState, ui_dir: &Path) -> std::io::Result<()> {
+    if let Ok(addr) = listener.local_addr() {
+        state.set_api_port(addr.port());
+    }
     axum::serve(listener, app(state, ui_dir)).await
 }
 

@@ -75,6 +75,8 @@ pub struct Hub {
 
     pub running: bool,
     pub proxy_port: u16,
+    /// The port this API + UI server listens on (for `/mcp/info`'s apiUrl).
+    pub api_port: u16,
     pub upstream: UpstreamConfig,
     /// Mirrors of the engine's state, kept current from its events.
     pub intercept: InterceptConfig,
@@ -95,6 +97,7 @@ impl Default for Hub {
             clients: HashMap::new(),
             running: false,
             proxy_port: DEFAULT_PROXY_PORT,
+            api_port: 4000,
             upstream: UpstreamConfig::default(),
             intercept: default_intercept(),
             scope: json!({ "enabled": false, "hosts": [] }),
@@ -308,6 +311,10 @@ pub struct AppState {
     pub intruder: Arc<hizn_tools::Intruder>,
     /// Intruder event sink → broadcast as intruder-start / row / done.
     pub intruder_sink: hizn_tools::IntruderSink,
+    /// File-backed plugin store.
+    pub plugins: Arc<crate::plugins::Plugins>,
+    /// WebSocket Repeater (live frame replay).
+    pub ws_repeater: Arc<hizn_tools::WsRepeater>,
 }
 
 impl AppState {
@@ -331,6 +338,11 @@ impl AppState {
     /// Broadcast a `setup-step` to every client (the orchestrator's step sink).
     pub fn broadcast_step(&self, step: &hizn_devices::SetupStep) {
         self.hub().broadcast(&hizn_devices::step_event(step));
+    }
+
+    /// Record the API server's listen port (for `/mcp/info`).
+    pub fn set_api_port(&self, port: u16) {
+        self.hub().api_port = port;
     }
 }
 
@@ -430,6 +442,27 @@ impl AppState {
             hub.on_proxy_event(event);
         })));
         let orchestrator = Arc::new(Orchestrator::new(Devices::new(Adb::new())));
+        let ws_hub = hub.clone();
+        let ws_rep_sink: hizn_tools::WsRepeaterSink = Arc::new(move |event| {
+            // Node spread the event into the message: `{ type, ...event }`.
+            let (kind, mut value) = match event {
+                hizn_tools::WsRepeaterEvent::Open(e) => ("ws-repeater-open", e),
+                hizn_tools::WsRepeaterEvent::Message(e) => ("ws-repeater-message", e),
+                hizn_tools::WsRepeaterEvent::Close(e) => ("ws-repeater-close", e),
+                hizn_tools::WsRepeaterEvent::Error(e) => ("ws-repeater-error", e),
+            };
+            if let Value::Object(map) = &mut value {
+                // Insert `type` first so it leads the object, as in Node.
+                let mut out = serde_json::Map::new();
+                out.insert("type".into(), json!(kind));
+                out.append(map);
+                value = Value::Object(out);
+            }
+            ws_hub
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .broadcast(&value);
+        });
         let sink_hub = hub.clone();
         let intruder_sink: hizn_tools::IntruderSink = Arc::new(move |event| {
             let mut hub = sink_hub.lock().unwrap_or_else(|p| p.into_inner());
@@ -454,6 +487,8 @@ impl AppState {
             repeater: Arc::new(hizn_tools::Repeater::new()),
             intruder: Arc::new(hizn_tools::Intruder::new()),
             intruder_sink,
+            plugins: Arc::new(crate::plugins::Plugins::new(crate::plugins_dir())),
+            ws_repeater: Arc::new(hizn_tools::WsRepeater::new(ws_rep_sink)),
         }
     }
 

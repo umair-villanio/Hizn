@@ -4,6 +4,8 @@
 
 pub mod intruder;
 pub mod repeater;
+pub mod ws_repeater;
 
 pub use intruder::{AttackType, Intruder, IntruderEvent, IntruderSink, Template, count_positions};
 pub use repeater::{Repeater, RepeaterRequest, RepeaterResponse};
+pub use ws_repeater::{WsRepeater, WsRepeaterEvent, WsRepeaterSink};
