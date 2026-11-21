@@ -12,8 +12,15 @@ side by side during the port; the Node backend is removed only at cutover.
 
 ## Why this shape
 
-The RAM cost of the current app is mostly **Electron's bundled Chromium**, not
-the Node backend. So the port replaces both:
+Electron ships its own Chromium (~300 MB on disk) and runs the Node backend in
+its main process. Tauri uses the Chromium that's already part of Windows
+(WebView2), and the backend becomes native Rust. So the port replaces both.
+
+What that buys, measured (see *Phase 1*): the install drops from ~300 MB to a
+~10 MB exe, and the backend process drops from ~112 MB to ~6 MB private. The
+UI itself still renders in Chromium either way (WebView2 *is* Chromium), so the
+renderer and GPU processes cost about the same in both — total RAM goes down by
+roughly a third, not by multiples.
 
 | | Today | After |
 |---|---|---|
@@ -140,15 +147,38 @@ before the next one starts.
   the browser gets the hello snapshot in Node's order and the header shows
   "Proxy stopped / Burp off / Intercept off". Release `hizn.exe` is 1.7 MB.
 
-### Phase 1 — Toolchain + desktop shell
-- Install the MSVC toolchain (VS 2022 Build Tools, C++ workload + Windows SDK),
-  `rustup` target `x86_64-pc-windows-msvc`, pin it with `rust-toolchain.toml`.
-- Re-run the Phase 0 exit check (first thing after the toolchain lands).
-- `hizn-app` (Tauri 2), mirroring `electron/main.js`: free loopback port, 1180×820
-  window (min 900×640), single instance, external links open in the browser,
-  same menu (reload / devtools / zoom / about).
-- Record a baseline: Electron idle RAM, startup time, install size.
-- **Exit:** the desktop window shows the UI from the Rust backend.
+### Phase 1 — Toolchain + desktop shell ✅ verified
+- MSVC toolchain installed and pinned (`rust-toolchain.toml`).
+- `crates/hizn-app` (Tauri 2.12), mirroring `electron/main.js`:
+  - backend on a free loopback port (binds port 0 directly — no probe-then-bind race);
+  - 1180×820 window (min 900×640), `#0e1116` background, app icon from the UI logo;
+  - single instance: a second launch focuses/restores the first and exits;
+  - same `window.hizn` marker as the Electron preload (`desktop`, `platform`, `versions`);
+  - **no Tauri IPC exposed to the page**; links off the backend open in the browser;
+  - menu bar hidden like Electron's `autoHideMenuBar` — Alt shows it — with
+    File / Edit / View / Help (reload, DevTools, zoom, fullscreen, GitHub, About);
+  - keyboard: Ctrl+R/F5 reload and F12/Ctrl+Shift+I DevTools (webview built-ins),
+    Ctrl+=/-/0 zoom with Electron's steps (level ±0.5, factor 1.2^level), F11 fullscreen;
+  - exports (`<a download>`) open a native Save dialog, like Electron.
+- Verified in the running window over the WebView2 debug port: UI and all 7 tabs
+  load, hello snapshot in Node's order, `/api/status` correct, zoom steps
+  1.25→1.37→1.50→1.25 (on a 125% display), F11 → 1536×864 fullscreen and back
+  to the same window rect, second launch exits in ~150 ms and restores the
+  window, HAR export opens "Save As" and cancel writes nothing.
+- Baseline (idle, UI loaded, release builds, same machine):
+
+  | | Tauri (`hizn-app`) | Electron (`Hizn` 0.2.0) |
+  |---|---|---|
+  | On disk | **9.5 MB** single exe | 299 MB folder (118 MB zip) |
+  | Total private memory | **178 MB** (7 processes) | 255 MB (4 processes) |
+  | Total working set | 389 MB | 426 MB |
+  | Shell + backend process | **5.5 MB** private | 112 MB private (Node) |
+  | UI renderer | 32 MB | 28 MB |
+  | GPU process | 82 MB | 102 MB |
+
+  The backend number is before the proxy engine exists (Node's includes
+  mockttp); re-measure in Phase 6. A further ~80 MB could come from running the
+  webview without GPU acceleration — to evaluate in Phase 6, not assumed.
 
 ### Phase 2 — Proxy core (largest phase)
 - CA: load the existing `~/.hizn` CA; generate + persist only if missing.
@@ -235,12 +265,13 @@ The GNU toolchain doesn't work here: current `windows-sys` / `getrandom` use
 `raw-dylib`, which on GNU needs a 64-bit `dlltool` and assembler, and a 32-bit
 MinGW on `PATH` breaks it further.
 
-## Running Phase 0
+## Running
 
 ```bash
-cargo run -p hizn-server            # → http://127.0.0.1:4000
+cargo run -p hizn-app               # desktop app (native window)
+cargo run -p hizn-server            # headless → http://127.0.0.1:4000
 DROIDMITM_PORT=4321 cargo run -p hizn-server
 ```
 
-The server finds `ui/` automatically when run from the repo; set `HIZN_UI_DIR`
-to override.
+Both find `ui/` automatically when run from the repo; set `HIZN_UI_DIR` to
+override.

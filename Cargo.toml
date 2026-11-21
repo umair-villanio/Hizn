@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/hizn-server"]
+members = ["crates/hizn-server", "crates/hizn-app"]
 
 [workspace.package]
 version = "0.2.0"
