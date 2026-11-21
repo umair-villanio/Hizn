@@ -1,0 +1,6 @@
+[toolchain]
+# The MSVC toolchain is required on Windows (Tauri, ring, the SDK resource
+# compiler). The GNU toolchain can't link current windows-sys / getrandom.
+channel = "stable-x86_64-pc-windows-msvc"
+components = ["clippy", "rustfmt"]
+profile = "minimal"

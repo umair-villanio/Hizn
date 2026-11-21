@@ -126,17 +126,19 @@ the remaining gap is countable at any time.
 Each phase ends with its exit check passing **against the Node reference**
 before the next one starts.
 
-### Phase 0 — Foundations (code written; run blocked on toolchain)
+### Phase 0 — Foundations ✅ verified
 - Cargo workspace; `hizn-server` crate; `hizn` headless binary.
 - Serves the unchanged `ui/` and `/ws` with the hello snapshot in the same order.
 - `GET /status` returns the stopped-proxy status in the exact Node shape.
 - All other 37 routes registered as 501 stubs tagged with their phase.
 - Unit tests: `/status` shape + key order, hello-snapshot order, broadcast fan-out,
   38-route table with no duplicates, router builds without conflicts.
-- Status: `cargo check --all-targets` passes. Linking is blocked on this machine
-  (see *Toolchain status*), so the binary and tests have not run yet.
 - **Exit:** tests pass; the UI loads from the Rust server, the WebSocket connects
   and gets its snapshot, and status shows the proxy as stopped.
+- Result: 5/5 tests pass, clippy `-D warnings` clean, rustfmt clean. `GET /`
+  serves `ui/index.html` byte for byte; `/api/status` matches the Node JSON;
+  the browser gets the hello snapshot in Node's order and the header shows
+  "Proxy stopped / Burp off / Intercept off". Release `hizn.exe` is 1.7 MB.
 
 ### Phase 1 — Toolchain + desktop shell
 - Install the MSVC toolchain (VS 2022 Build Tools, C++ workload + Windows SDK),
@@ -223,22 +225,15 @@ before the next one starts.
 | Toolchain: machine has `windows-gnu` + 32-bit MinGW only | install MSVC Build Tools in Phase 1 (one-time) |
 | Future server-side plugins (backend JS) | embed a small JS engine (QuickJS via `rquickjs`) so plugins stay JavaScript |
 
-## Toolchain status
+## Toolchain
 
-This machine has Rust 1.100 on `stable-x86_64-pc-windows-gnu`, and only a
-**32-bit** MinGW (`C:\MinGW`, GCC 6.3). That's not enough to link current Windows
-crates: `windows-sys` and `getrandom` use `raw-dylib`, which on the GNU target
-needs a 64-bit `dlltool` *and* a 64-bit assembler (`as`). Rust bundles the
-former but not the latter, and the 32-bit MinGW tools on `PATH` reject x86-64.
-`cargo check` works (it skips that step); `cargo build` / `cargo test` do not.
+Windows builds use the **MSVC** toolchain, pinned in `rust-toolchain.toml`.
+Requirements: VS 2022 Build Tools with the "Desktop development with C++"
+workload (MSVC + Windows SDK) and the WebView2 runtime (built into Windows 11).
 
-The fix is the MSVC toolchain from Phase 1, which is also what Tauri, `ring`, and
-the Windows SDK resource compiler need. Once it's installed:
-
-```bash
-rustup toolchain install stable-x86_64-pc-windows-msvc
-cargo test -p hizn-server
-```
+The GNU toolchain doesn't work here: current `windows-sys` / `getrandom` use
+`raw-dylib`, which on GNU needs a 64-bit `dlltool` and assembler, and a 32-bit
+MinGW on `PATH` breaks it further.
 
 ## Running Phase 0
 

@@ -34,7 +34,11 @@ pub struct UpstreamConfig {
 impl Default for UpstreamConfig {
     fn default() -> Self {
         // Burp's default listener.
-        Self { enabled: false, host: "127.0.0.1".into(), port: 8080 }
+        Self {
+            enabled: false,
+            host: "127.0.0.1".into(),
+            port: 8080,
+        }
     }
 }
 
@@ -49,7 +53,11 @@ pub struct InterceptConfig {
 impl Default for InterceptConfig {
     fn default() -> Self {
         // Responses are only held when explicitly asked for.
-        Self { enabled: false, requests: true, responses: false }
+        Self {
+            enabled: false,
+            requests: true,
+            responses: false,
+        }
     }
 }
 
@@ -130,7 +138,9 @@ impl Hub {
 
     /// Send one event to every open client, dropping clients that have gone away.
     pub fn broadcast(&mut self, msg: &impl Serialize) {
-        let Ok(text) = serde_json::to_string(msg) else { return };
+        let Ok(text) = serde_json::to_string(msg) else {
+            return;
+        };
         let text = Utf8Bytes::from(text);
         self.clients.retain(|_, tx| tx.send(text.clone()).is_ok());
     }
@@ -165,17 +175,27 @@ impl Hub {
                 out.push(Utf8Bytes::from(s));
             }
         };
-        push(serde_json::to_string(&json!({ "type": "intercept-config", "config": self.intercept })));
-        push(serde_json::to_string(&json!({ "type": "connections", "connected": self.connected })));
-        push(serde_json::to_string(&json!({ "type": "scope", "scope": self.scope })));
+        push(serde_json::to_string(
+            &json!({ "type": "intercept-config", "config": self.intercept }),
+        ));
+        push(serde_json::to_string(
+            &json!({ "type": "connections", "connected": self.connected }),
+        ));
+        push(serde_json::to_string(
+            &json!({ "type": "scope", "scope": self.scope }),
+        ));
         push(serde_json::to_string(&FlowSnapshot {
             kind: "flow-snapshot",
             flows: self.flows.values().collect(),
         }));
         for item in self.pending.values() {
-            push(serde_json::to_string(&json!({ "type": "intercept", "item": item })));
+            push(serde_json::to_string(
+                &json!({ "type": "intercept", "item": item }),
+            ));
         }
-        push(serde_json::to_string(&json!({ "type": "proxy-status", "status": self.status() })));
+        push(serde_json::to_string(
+            &json!({ "type": "proxy-status", "status": self.status() }),
+        ));
         out
     }
 }
@@ -193,7 +213,9 @@ impl AppState {
 
     /// Lock the hub. Never hold the guard across an `.await`.
     pub fn hub(&self) -> MutexGuard<'_, Hub> {
-        self.hub.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        self.hub
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 }
 
@@ -230,7 +252,8 @@ mod tests {
     fn hello_snapshot_order_matches_node() {
         let mut hub = Hub::default();
         hub.flows.insert("f1".into(), json!({ "id": "f1" }));
-        hub.pending.insert("f1".into(), json!({ "id": "f1", "kind": "request" }));
+        hub.pending
+            .insert("f1".into(), json!({ "id": "f1", "kind": "request" }));
         let (_, mut rx) = hub.add_client();
         let kinds: Vec<String> = drain(&mut rx)
             .iter()
@@ -238,7 +261,14 @@ mod tests {
             .collect();
         assert_eq!(
             kinds,
-            ["intercept-config", "connections", "scope", "flow-snapshot", "intercept", "proxy-status"]
+            [
+                "intercept-config",
+                "connections",
+                "scope",
+                "flow-snapshot",
+                "intercept",
+                "proxy-status"
+            ]
         );
     }
 

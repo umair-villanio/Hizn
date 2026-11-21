@@ -71,19 +71,37 @@ pub fn router() -> Router<AppState> {
             "DELETE" => MethodFilter::DELETE,
             other => unreachable!("unexpected method {other}"),
         };
-        let entry = by_path.entry(path).or_insert_with(MethodRouter::new);
+        let entry = by_path.entry(path).or_default();
         let current = std::mem::replace(entry, MethodRouter::new());
-        *entry = current.on(filter, move || async move { not_ported(method, path, phase) });
+        *entry = current.on(
+            filter,
+            move || async move { not_ported(method, path, phase) },
+        );
     }
 
     by_path
         .into_iter()
-        .fold(Router::new(), |router, (path, methods)| router.route(path, methods))
+        .fold(Router::new(), |router, (path, methods)| {
+            router.route(path, methods)
+        })
 }
 
 async fn status(State(state): State<AppState>) -> Json<ProxyStatus> {
     let status = state.hub().status();
     Json(status)
+}
+
+fn not_ported(method: &str, path: &str, phase: u8) -> impl IntoResponse {
+    (
+        StatusCode::NOT_IMPLEMENTED,
+        Json(json!({
+            "error": format!(
+                "{method} /api{path} is not available in the Rust backend yet (phase {phase} of the port)."
+            ),
+            "route": format!("{method} {path}"),
+            "phase": phase,
+        })),
+    )
 }
 
 #[cfg(test)]
@@ -107,17 +125,4 @@ mod tests {
     fn router_builds_without_conflicts() {
         let _ = router();
     }
-}
-
-fn not_ported(method: &str, path: &str, phase: u8) -> impl IntoResponse {
-    (
-        StatusCode::NOT_IMPLEMENTED,
-        Json(json!({
-            "error": format!(
-                "{method} /api{path} is not available in the Rust backend yet (phase {phase} of the port)."
-            ),
-            "route": format!("{method} {path}"),
-            "phase": phase,
-        })),
-    )
 }

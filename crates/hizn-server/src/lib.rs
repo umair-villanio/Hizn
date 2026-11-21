@@ -49,7 +49,10 @@ pub fn find_ui_dir() -> Option<PathBuf> {
     if let Ok(cwd) = std::env::current_dir() {
         roots.push(cwd);
     }
-    if let Some(exe_dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(Path::to_path_buf)) {
+    if let Some(exe_dir) = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(Path::to_path_buf))
+    {
         roots.push(exe_dir);
     }
     for root in roots {
