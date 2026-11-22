@@ -369,12 +369,27 @@ skipped, and `/frida/provision` returns the standard "not ported yet" message.
 - **Exit met:** analyzer reports match on the reference APKs; Repeater /
   Intruder / WS Repeater / MCP match Node.
 
-### Phase 6 — Hardening + sign-off
-- Parity checklist complete: 38/38 routes, 20/20 events, zero 501s.
-- Soak test (hours of real device traffic), memory-leak check.
-- Measure against the Phase 1 baseline: idle RAM, RAM under load, startup,
-  install size, proxy latency.
-- Installer via the Tauri bundler.
+### Phase 6 — Hardening + sign-off (in progress)
+- **Route surface:** 37 routes fully ported; the only 501 stub is
+  `/frida/provision` (the Phase 4 Frida follow-up). Every WebSocket event type
+  is produced.
+- **Parity:** the harness passes **85/85** (73 identical + 12 documented
+  differences).
+- **Proxy throughput** (5000 requests, concurrency 64, through the proxy to a
+  local HTTP origin, release build): **Rust 1546 req/s vs Node 978 req/s —
+  ~1.6× faster**; both captured all 5000 flows.
+- **Memory:** no leak — a 3000-request run left the backend flat (20.2 → 20.4
+  MB); the rise to ~67 MB under the 5000-flow run is the capped flow store
+  (4 KB body each), which does not grow past 5000 flows.
+- **Size** (release): `hizn.exe` 13 MB, `hizn-app.exe` 20 MB, `hizn-mcp.exe`
+  4.6 MB. A portable bundle (app + headless + MCP + ui/plugins/scripts) is
+  **18 MB on disk / 7.2 MB zipped**, against the Electron build's 299 MB /
+  118 MB. Verified: the staged headless server serves the UI, finds its plugins
+  and locates the MCP binary.
+- **Installer:** `crates/hizn-app/tauri.conf.json` is configured for the Tauri
+  NSIS bundler (ui / plugins / scripts as resources); building the installer
+  needs the `tauri-cli`.
+- **Still to do:** a longer real-device soak, and the NSIS installer build.
 
 ### Phase 7 — Cutover
 - Rust becomes the default build; the Node backend and Electron shell are removed

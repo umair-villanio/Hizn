@@ -11,10 +11,17 @@
     }
   },
   "bundle": {
-    "active": false,
+    "active": true,
+    "targets": ["nsis"],
     "category": "DeveloperTool",
     "license": "AGPL-3.0-only",
     "shortDescription": "One-click Android and Firefox HTTPS interception.",
+    "longDescription": "Hizn — one-click Android and Firefox HTTPS interception, a Burp-style workbench with Repeater, Intruder, Match & Replace, a static APK analyzer, plugins and an MCP bridge.",
+    "resources": {
+      "../../ui": "ui",
+      "../../plugins": "plugins",
+      "../../scripts": "scripts"
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
