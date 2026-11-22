@@ -170,6 +170,10 @@ Issues and pull requests are welcome. Keep plugins self-contained (no npm deps,
 no network calls) and target the `dev` branch. See [`plugins/README.md`](plugins/README.md)
 for the plugin format.
 
+## Credits
+
+Hizn's Android/Frida interception approach builds on the open-source work of [HTTP Toolkit](https://httptoolkit.com) by Tim Perry (AGPL-3.0); see [`NOTICE.md`](NOTICE.md) for full attributions.
+
 ## License
 
 AGPL-3.0-only. Includes adapted AGPL-3.0 scripts from httptoolkit/frida-interception-and-unpinning. If you distribute a modified build, you must share your source. See [`NOTICE.md`](NOTICE.md) for third-party attributions.
