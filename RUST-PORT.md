@@ -328,16 +328,27 @@ node tools/parity/proxy-parity.mjs --node ../droidmitm --rust target/debug/hizn.
   clearing the device proxy. The no-device error shapes (`/connect` with a bad
   serial → 400, `/connect/genymotion` with no VM → 404) match Node.
 
-**Deferred to a Phase 4 follow-up — Frida.** The Node backend injects the
-`scripts/frida/` CA + certificate-unpinning scripts by speaking the Frida
-control protocol (D-Bus) over an ADB tunnel to an on-device `frida-server`
-(`frida-js`), and provisions `frida-server` by downloading the right-ABI build.
-That transport is the one piece without a clean pure-Rust equivalent, so it's a
-deliberate choice: (a) port the Frida protocol to Rust, (b) use a native
-`frida` devkit binding, or (c) a small bundled helper that speaks it. Until
-then, one-click works fully for rooted devices and emulators (system-store CA —
-the common Genymotion path); `fridaTarget` is accepted but the Frida step is
-skipped, and `/frida/provision` returns the standard "not ported yet" message.
+**Frida — provisioning done, injection pending.** The Node backend has two
+Frida pieces: (1) **provision** `frida-server` by downloading the right-ABI
+build and starting it, and (2) **inject** the `scripts/frida/` CA +
+certificate-unpinning scripts by speaking the Frida control protocol (D-Bus
+framed over a WebSocket transport to `frida-server`, `frida-js`).
+
+- **(1) Provisioning is ported** (`crates/hizn-devices/src/frida.rs`): resolve
+  the GitHub release, find the `frida-server-*-android-<arch>.xz` asset, download
+  and decompress it (pure-Rust `lzma-rs`), push, chmod, start as root — the same
+  commands as Node. `/frida/provision` is live (so **all 38 routes respond, zero
+  501 stubs**). Verified on the Genymotion VM: it downloaded frida-server 17.27.4
+  (x86_64, 172 MB), pushed it root-owned and executable, and the binary runs
+  (`--version` → 17.27.4). Like Node, whether the server is *listening* the
+  instant after a fresh push is timing-dependent (Node's one-click reports "isn't
+  listening yet" in that case).
+- **(2) Injection is the remaining piece** — porting the Frida control protocol
+  (WebSocket + D-Bus `HostSession`/`AgentSession`: spawn / attach / createScript
+  / loadScript / resume) to pure Rust. This is the single largest isolated part
+  of the project and its own effort. Until it lands, one-click works fully for
+  rooted devices and emulators (system-store CA — the common Genymotion path);
+  `fridaTarget` is accepted but the inject step is skipped.
 - **Exit (met for the device tier):** one-click connect on a real device
   captures HTTPS; Genymotion auto-connects. (Unpinning via Frida: with the
   follow-up.)

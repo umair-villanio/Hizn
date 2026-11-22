@@ -20,7 +20,7 @@ use hizn_proxy::Decision;
 use crate::state::{AppState, ProxyStatus, UpstreamConfig};
 
 /// Not-yet-ported routes: (method, path, phase).
-pub const PENDING: &[(&str, &str, u8)] = &[("POST", "/frida/provision", 4)];
+pub const PENDING: &[(&str, &str, u8)] = &[];
 
 /// Routes with a real implementation.
 pub const PORTED: &[(&str, &str)] = &[
@@ -44,6 +44,7 @@ pub const PORTED: &[(&str, &str)] = &[
     ("POST", "/connect"),
     ("POST", "/disconnect"),
     ("POST", "/connect/genymotion"),
+    ("POST", "/frida/provision"),
     ("POST", "/repeater/send"),
     ("POST", "/intruder/start"),
     ("POST", "/intruder/stop"),
@@ -83,6 +84,7 @@ pub fn router() -> Router<AppState> {
     by_path.insert("/connect", post(connect));
     by_path.insert("/disconnect", post(disconnect));
     by_path.insert("/connect/genymotion", post(connect_genymotion));
+    by_path.insert("/frida/provision", post(frida_provision));
     by_path.insert("/repeater/send", post(repeater_send));
     by_path.insert("/intruder/start", post(intruder_start));
     by_path.insert("/intruder/stop", post(intruder_stop));
@@ -614,6 +616,29 @@ async fn run_one_click(state: &AppState, opts: hizn_devices::SetupOptions) -> Re
             Json(result).into_response()
         }
         Err(e) => error(StatusCode::BAD_REQUEST, e),
+    }
+}
+
+/// Download + push + start frida-server for a device (rooted).
+async fn frida_provision(State(state): State<AppState>, JsonBody(body): JsonBody) -> Response {
+    let serial = string_field(&body, "serial").unwrap_or_default();
+    let devices = state.orchestrator.devices();
+    let device = match devices.list().await {
+        Ok(list) => list.into_iter().find(|d| d.serial == serial),
+        Err(e) => return error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    };
+    let Some(device) = device else {
+        return error(StatusCode::NOT_FOUND, "Device not found");
+    };
+    let Some(abi) = device.abi.as_deref() else {
+        return error(StatusCode::BAD_REQUEST, "Unknown device ABI");
+    };
+    let version = string_field(&body, "version")
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "latest".into());
+    match hizn_devices::provision_server(devices.adb(), &serial, abi, &version).await {
+        Ok(result) => Json(result).into_response(),
+        Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     }
 }
 

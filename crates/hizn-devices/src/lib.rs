@@ -6,10 +6,12 @@
 
 pub mod adb;
 pub mod devices;
+pub mod frida;
 pub mod orchestrator;
 
 pub use adb::{Adb, AdbError};
 pub use devices::{CaInstall, DeviceInfo, Devices};
+pub use frida::{Provisioned, provision_server};
 pub use orchestrator::{
     FridaOutcome, FridaRequest, FridaRunner, Orchestrator, ProxyControl, SetupOptions, SetupResult,
     SetupStep, StepSink, step_event,

@@ -12,6 +12,8 @@ tokio = { workspace = true, features = ["io-util", "net", "time", "process", "fs
 serde.workspace = true
 serde_json.workspace = true
 if-addrs = "0.15"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "json"] }
+lzma-rs = "0.3"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["io-util", "net", "time", "process", "macros", "rt-multi-thread"] }
