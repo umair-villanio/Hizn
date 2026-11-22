@@ -5,29 +5,29 @@ tools, so any MCP-compatible client can query and drive a running Hizn instance
 — read the captured HTTP history, inspect scope and devices, scan APKs, resend
 requests, run Intruder, and resolve held intercepts.
 
-It speaks JSON-RPC 2.0 over **stdio**, has **no dependencies**, and talks to
-Hizn's local REST API — so **Hizn must be running** (start the app, or
-`npm start`).
+It speaks JSON-RPC 2.0 over **stdio**, is a small self-contained binary, and
+talks to Hizn's local REST API — so **Hizn must be running** (start the desktop
+app, or `cargo run -p hizn-server`).
 
 ## Build
 
 ```
-npm run build
+cargo build --release -p hizn-mcp
 ```
 
-This compiles the server to `dist/mcp/mcp-server.js`.
+This produces the `hizn-mcp` binary at `target/release/hizn-mcp`
+(`hizn-mcp.exe` on Windows).
 
 ## Register it with an MCP client
 
 Most MCP clients read a JSON config listing their servers. Add an entry that
-runs the compiled server:
+runs the binary:
 
 ```json
 {
   "mcpServers": {
     "hizn": {
-      "command": "node",
-      "args": ["/absolute/path/to/hizn/dist/mcp/mcp-server.js"],
+      "command": "/absolute/path/to/target/release/hizn-mcp",
       "env": {
         "HIZN_API_URL": "http://127.0.0.1:4000",
         "HIZN_MCP_ACTIVE": "0"
@@ -37,7 +37,8 @@ runs the compiled server:
 }
 ```
 
-You can also run it directly for a quick check: `npm run mcp`.
+On Windows use the full path to `hizn-mcp.exe`. You can also run it directly for
+a quick check: `cargo run -p hizn-mcp`.
 
 ## Configuration (environment)
 
