@@ -1,5 +1,7 @@
 target/
 crates/hizn-app/gen/
+node_modules/
+dist/
 *.pem
 *.key
 *.log

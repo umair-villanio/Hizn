@@ -1790,7 +1790,7 @@ checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
 name = "hizn-analyzer"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "cms",
  "der",
@@ -1805,7 +1805,7 @@ dependencies = [
 
 [[package]]
 name = "hizn-app"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "hizn-server",
  "rfd",
@@ -1818,7 +1818,7 @@ dependencies = [
 
 [[package]]
 name = "hizn-devices"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "futures-util",
  "if-addrs",
@@ -1832,7 +1832,7 @@ dependencies = [
 
 [[package]]
 name = "hizn-mcp"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "reqwest 0.12.28",
  "serde",
@@ -1842,7 +1842,7 @@ dependencies = [
 
 [[package]]
 name = "hizn-proxy"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "brotli",
  "bytes",
@@ -1874,7 +1874,7 @@ dependencies = [
 
 [[package]]
 name = "hizn-server"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "axum",
  "futures-util",
@@ -1891,7 +1891,7 @@ dependencies = [
 
 [[package]]
 name = "hizn-tools"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "base64 0.22.1",
  "bytes",
