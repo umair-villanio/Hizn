@@ -300,7 +300,7 @@ node tools/parity/proxy-parity.mjs --node ../droidmitm --rust target/debug/hizn.
 | Re-compressed body bytes | Node zlib, level 1 | miniz, level 1 | different DEFLATE encoders pick different matches; the harness checks the *decompressed* content is identical |
 | Header names a user types in an edit | sent with the typed case | sent lowercase | HTTP header names are case-insensitive |
 
-### Phase 4 — Devices + one-click ✅ verified (Frida injection deferred)
+### Phase 4 — Devices + one-click ✅ verified (incl. Frida injection)
 - **`crates/hizn-devices`**: a thin ADB client (the ADB server protocol on TCP
   5037 — device list, shell, sync push/pull, reverse tunnels, TCP connect),
   replacing `@devicefarmer/adbkit`. No adbkit, no bundled ADB binary; it drives
@@ -328,30 +328,40 @@ node tools/parity/proxy-parity.mjs --node ../droidmitm --rust target/debug/hizn.
   clearing the device proxy. The no-device error shapes (`/connect` with a bad
   serial → 400, `/connect/genymotion` with no VM → 404) match Node.
 
-**Frida — provisioning done, injection pending.** The Node backend has two
-Frida pieces: (1) **provision** `frida-server` by downloading the right-ABI
-build and starting it, and (2) **inject** the `scripts/frida/` CA +
+**Frida — provisioning and injection both ported (pure Rust).** The Node
+backend has two Frida pieces: (1) **provision** `frida-server` by downloading the
+right-ABI build and starting it, and (2) **inject** the `scripts/frida/` CA +
 certificate-unpinning scripts by speaking the Frida control protocol (D-Bus
-framed over a WebSocket transport to `frida-server`, `frida-js`).
+framed over a WebSocket transport to `frida-server`, `frida-js`). Both are now
+ported with **no Node helper** — a hand-rolled D-Bus-over-WebSocket client, so
+the backend stays Node-free.
 
-- **(1) Provisioning is ported** (`crates/hizn-devices/src/frida.rs`): resolve
-  the GitHub release, find the `frida-server-*-android-<arch>.xz` asset, download
-  and decompress it (pure-Rust `lzma-rs`), push, chmod, start as root — the same
-  commands as Node. `/frida/provision` is live (so **all 38 routes respond, zero
-  501 stubs**). Verified on the Genymotion VM: it downloaded frida-server 17.27.4
-  (x86_64, 172 MB), pushed it root-owned and executable, and the binary runs
-  (`--version` → 17.27.4). Like Node, whether the server is *listening* the
+- **(1) Provisioning** (`crates/hizn-devices/src/frida.rs`): resolve the GitHub
+  release, find the `frida-server-*-android-<arch>.xz` asset, download and
+  decompress it (pure-Rust `lzma-rs`), push, chmod, start as root — the same
+  commands as Node. Verified on the Genymotion VM: it downloaded frida-server
+  17.27.4 (x86_64, 172 MB), pushed it root-owned and executable, and the binary
+  runs (`--version` → 17.27.4). Like Node, whether the server is *listening* the
   instant after a fresh push is timing-dependent (Node's one-click reports "isn't
   listening yet" in that case).
-- **(2) Injection is the remaining piece** — porting the Frida control protocol
-  (WebSocket + D-Bus `HostSession`/`AgentSession`: spawn / attach / createScript
-  / loadScript / resume) to pure Rust. This is the single largest isolated part
-  of the project and its own effort. Until it lands, one-click works fully for
-  rooted devices and emulators (system-store CA — the common Genymotion path);
-  `fridaTarget` is accepted but the inject step is skipped.
-- **Exit (met for the device tier):** one-click connect on a real device
-  captures HTTPS; Genymotion auto-connects. (Unpinning via Frida: with the
-  follow-up.)
+- **(2) Injection** — a pure-Rust Frida control-protocol client
+  (`crates/hizn-devices/src/dbus.rs` D-Bus codec + `frida.rs` client): WebSocket
+  transport to `frida-server` over an ADB `tcp:` tunnel, version introspection
+  (`HostSession17`/`16`), and `spawn` / `attach` / `createScript` / `loadScript`
+  / `resume`. The server step (`crates/hizn-server/src/frida_step.rs`) builds the
+  same payload as Node — the CA + proxy config prelude followed by the six
+  `scripts/frida/` hooks in load order — and injects it, holding the session
+  alive. This was the single largest isolated part of the project.
+- **Verified end to end on the Genymotion VM:** `POST /connect` with a
+  `fridaTarget` ran the full one-click flow (device → proxy → ip → ca → route →
+  **frida inject → `org.chromium.webview_shell`: ok, pid 8995, CA + unpinning
+  active**, `caInstall: "frida"`), then the WebView's **HTTPS request to
+  `example.com` was decrypted into the flow list** (full plaintext request +
+  response headers). Injection protocol first proven standalone (example
+  `frida_inject`, pid 8797).
+- **Exit (met):** one-click connect on a rooted device/emulator captures HTTPS;
+  Frida injects the CA + certificate-unpinning hooks into a target app;
+  Genymotion auto-connects.
 
 ### Phase 5 — Tools ✅ verified
 - **Repeater + Intruder** (`crates/hizn-tools`): Repeater (re-send, no redirects,
@@ -374,16 +384,14 @@ framed over a WebSocket transport to `frida-server`, `frida-js`).
   on stdio, the same tools with `HIZN_MCP_ACTIVE` gating. `initialize`,
   `tools/list` (8 read-only / 15 active, schemas byte-identical), `ping`,
   `tools/call` and gating all match Node.
-- **Routes ported: 38/38** (one group — Frida — behind the Phase 4 follow-up:
-  `/frida/provision` returns the standard "not ported" message; everything else
-  is live).
+- **Routes ported: 38/38** — all live, including the Frida group
+  (`/frida/provision` plus Frida injection in the one-click `/connect`).
 - **Exit met:** analyzer reports match on the reference APKs; Repeater /
   Intruder / WS Repeater / MCP match Node.
 
 ### Phase 6 — Hardening + sign-off (in progress)
-- **Route surface:** 37 routes fully ported; the only 501 stub is
-  `/frida/provision` (the Phase 4 Frida follow-up). Every WebSocket event type
-  is produced.
+- **Route surface:** 38/38 routes fully ported — no 501 stubs (Frida
+  provisioning + injection now live). Every WebSocket event type is produced.
 - **Parity:** the harness passes **85/85** (73 identical + 12 documented
   differences).
 - **Proxy throughput** (5000 requests, concurrency 64, through the proxy to a

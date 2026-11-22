@@ -317,6 +317,8 @@ pub struct AppState {
     pub ws_repeater: Arc<hizn_tools::WsRepeater>,
     /// Desktop browser capture (Firefox).
     pub desktop: Arc<crate::desktop::Desktop>,
+    /// Live Frida sessions (injected scripts stay loaded while connected).
+    pub frida_sessions: hizn_devices::FridaSessions,
 }
 
 impl AppState {
@@ -492,6 +494,7 @@ impl AppState {
             plugins: Arc::new(crate::plugins::Plugins::new(crate::plugins_dir())),
             ws_repeater: Arc::new(hizn_tools::WsRepeater::new(ws_rep_sink)),
             desktop: Arc::new(crate::desktop::Desktop::new()),
+            frida_sessions: hizn_devices::FridaSessions::new(),
         }
     }
 

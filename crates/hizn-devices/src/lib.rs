@@ -5,13 +5,14 @@
 //! SPDX-License-Identifier: AGPL-3.0-only
 
 pub mod adb;
+pub mod dbus;
 pub mod devices;
 pub mod frida;
 pub mod orchestrator;
 
 pub use adb::{Adb, AdbError};
 pub use devices::{CaInstall, DeviceInfo, Devices};
-pub use frida::{Provisioned, provision_server};
+pub use frida::{FridaSessions, Provisioned, provision_server};
 pub use orchestrator::{
     FridaOutcome, FridaRequest, FridaRunner, Orchestrator, ProxyControl, SetupOptions, SetupResult,
     SetupStep, StepSink, step_event,

@@ -1820,12 +1820,14 @@ dependencies = [
 name = "hizn-devices"
 version = "0.2.0"
 dependencies = [
+ "futures-util",
  "if-addrs",
  "lzma-rs",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
  "tokio",
+ "tokio-tungstenite 0.24.0",
 ]
 
 [[package]]

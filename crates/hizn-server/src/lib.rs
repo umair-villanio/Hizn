@@ -8,6 +8,7 @@
 
 pub mod api;
 pub mod desktop;
+pub mod frida_step;
 pub mod plugins;
 pub mod state;
 pub mod ws;
@@ -23,10 +24,24 @@ pub use state::AppState;
 
 /// The shipped `plugins/` folder (sibling of `ui/`), for the contrib store.
 pub fn plugins_dir() -> PathBuf {
+    sibling_dir("plugins")
+}
+
+/// The `scripts/frida/` folder (for the Frida injection payload).
+pub fn frida_scripts_dir() -> PathBuf {
+    sibling_dir("scripts").join("frida")
+}
+
+/// A folder that ships next to `ui/` (both are siblings under the app root).
+fn sibling_dir(name: &str) -> PathBuf {
     find_ui_dir()
-        .and_then(|ui| ui.parent().map(|p| p.join("plugins")))
+        .and_then(|ui| ui.parent().map(|p| p.join(name)))
         .filter(|p| p.is_dir())
-        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins"))
+        .unwrap_or_else(|| {
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../..")
+                .join(name)
+        })
 }
 
 /// Build the full app: `/api/*`, `/ws`, and the static UI.

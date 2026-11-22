@@ -605,10 +605,29 @@ async fn run_one_click(state: &AppState, opts: hizn_devices::SetupOptions) -> Re
     let bridge = state.proxy_bridge();
     let step_state = state.clone();
     let sink: hizn_devices::StepSink = Box::new(move |step| step_state.broadcast_step(step));
-    // Frida injection is not ported yet (Phase 4 follow-up); the step is skipped.
+    // The Frida step: provision frida-server if needed, build the CA + unpinning
+    // payload, and inject it into the target app. Only invoked when the options
+    // carry a `frida_target`.
+    let adb = state.orchestrator.devices().adb().clone();
+    let sessions = state.frida_sessions.clone();
+    let scripts = crate::frida_scripts_dir();
+    let runner: Box<hizn_devices::FridaRunner> =
+        Box::new(move |req: hizn_devices::FridaRequest| {
+            let adb = adb.clone();
+            let sessions = sessions.clone();
+            let scripts = scripts.clone();
+            Box::pin(async move {
+                let (steps, ca_via_frida) =
+                    crate::frida_step::run_frida_step(req, &adb, &sessions, &scripts).await;
+                hizn_devices::FridaOutcome {
+                    steps,
+                    ca_via_frida,
+                }
+            })
+        });
     let result = state
         .orchestrator
-        .run_one_click(opts, &bridge, &sink, None)
+        .run_one_click(opts, &bridge, &sink, Some(runner.as_ref()))
         .await;
     match result {
         Ok(result) => {

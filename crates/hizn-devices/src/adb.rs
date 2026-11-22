@@ -190,6 +190,16 @@ impl Adb {
         Ok(String::from_utf8_lossy(&out).into_owned())
     }
 
+    /// Open a raw connection to a TCP port on the device (ADB `tcp:<port>`
+    /// service). The returned stream is a direct pipe to the device port — used
+    /// for the Frida control socket (frida-server on 27042).
+    pub async fn open_tcp(&self, serial: &str, port: u16) -> Result<TcpStream> {
+        let mut conn = Conn::open().await?;
+        conn.transport(serial).await?;
+        conn.send(&format!("tcp:{port}")).await?;
+        Ok(conn.stream)
+    }
+
     /// `getprop <prop>`, trimmed; `None` if empty.
     pub async fn getprop(&self, serial: &str, prop: &str) -> Result<Option<String>> {
         let out = self.shell(serial, &format!("getprop {prop}")).await?;
