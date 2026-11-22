@@ -386,10 +386,12 @@ skipped, and `/frida/provision` returns the standard "not ported yet" message.
   **18 MB on disk / 7.2 MB zipped**, against the Electron build's 299 MB /
   118 MB. Verified: the staged headless server serves the UI, finds its plugins
   and locates the MCP binary.
-- **Installer:** `crates/hizn-app/tauri.conf.json` is configured for the Tauri
-  NSIS bundler (ui / plugins / scripts as resources); building the installer
-  needs the `tauri-cli`.
-- **Still to do:** a longer real-device soak, and the NSIS installer build.
+- **Installer:** built with the Tauri NSIS bundler (`cargo tauri build`) —
+  **`Hizn_0.2.0_x64-setup.exe`, 5.28 MB**, bundling the app with ui / plugins /
+  scripts as resources. Against the Electron installer's **117.6 MB** zip that's
+  **~22× smaller**. A portable zip (`hizn-0.2.0-rust-win-x64.zip`, 7.2 MB) is
+  also produced. Both land in `release/` (gitignored).
+- **Remaining (optional):** a longer real-device soak; otherwise Phase 6 is met.
 
 ### Phase 7 — Cutover
 - Rust becomes the default build; the Node backend and Electron shell are removed
